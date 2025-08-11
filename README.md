@@ -1,81 +1,35 @@
-
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
 import csv
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
-# ==== EDIT THESE ====
-SRC_CSV = Path(r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Pythondateien\ENT_20250613-007 (2).csv")
-DST_XLSX = Path(r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Umwandlungsexcel Entnahmen05.25_ANLEITUNG.xlsx")
-SHEET_NAME = "Inputfile"
-FORCE_DELIMITER = None
-ENCODING = "utf-8"
-OVERWRITE_SHEET = True
-NUMERIC_COLUMNS = ["E", "F"]  # force numeric from row 2+
-# ====================
-
-def col_letter_to_index(letter: str) -> int:
-    letter = letter.upper()
-    idx = 0
-    for c in letter:
-        idx = idx * 26 + (ord(c) - ord("A") + 1)
-    return idx - 1
-
-NUMERIC_COL_IDX = {col_letter_to_index(c) for c in NUMERIC_COLUMNS}
+# --- minimal GUI selectors ---
+import tkinter as tk
+from tkinter import filedialog, simpledialog, messagebox
 
 def detect_delimiter(path: Path, encoding="utf-8") -> str:
     with path.open("r", encoding=encoding, newline="") as f:
-        sample = f.read(4096); f.seek(0)
+        sample = f.read(4096)
+        f.seek(0)
         try:
             return csv.Sniffer().sniff(sample).delimiter
         except Exception:
             for d in [",", ";", "\t", "|"]:
-                if d in sample: return d
-            return ","
-
-def force_number(v: str):
-    if v is None: return None
-    v = v.strip()
-    if v == "": return None
-    v = v.replace(",", ".")
-    try:
-        if "." not in v:
-            return int(v)
-        return float(v)
-    except ValueError:
-        return None
-
-def smart_convert(v: str):
-    if v is None: return None
-    v = v.strip()
-    if v == "": return ""
-    # int?
-    if v.isdigit() or (v.startswith("-") and v[1:].isdigit()):
-        try: return int(v)
-        except: pass
-    # float?
-    try: return float(v)
-    except: return v
+                if d in sample:
+                    return d
+            return ","  # safe fallback
 
 def csv_to_existing_xlsx(src: Path, dst: Path, sheet_name: str,
                          delimiter=None, encoding="utf-8", overwrite_sheet=True):
     if not src.exists():
         raise FileNotFoundError(src)
 
-    wb = load_workbook(dst) if dst.exists() else Workbook()
+    # Load or create workbook
+    if dst.exists():
+        wb = load_workbook(dst)
+    else:
+        wb = Workbook()
 
+    # Prepare sheet (create if needed, otherwise clear it)
     if sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         if overwrite_sheet:
@@ -83,34 +37,88 @@ def csv_to_existing_xlsx(src: Path, dst: Path, sheet_name: str,
     else:
         ws = wb.create_sheet(title=sheet_name)
 
+    # Detect delimiter if not given
     if delimiter is None:
         delimiter = detect_delimiter(src, encoding=encoding)
 
-    with src.open("r", encoding=encoding, newline="") as f:
+    # Copy rows EXACTLY as text (no type conversions)
+    with src.open("r", encoding=encoding, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delimiter)
-        for row_idx, row in enumerate(reader, start=1):
-            new_row = []
-            for i, val in enumerate(row):
-                if row_idx == 1:
-                    # Header row: keep exactly as text
-                    new_row.append("" if val is None else str(val))
-                else:
-                    # Data rows
-                    if i in NUMERIC_COL_IDX:
-                        num = force_number(val)
-                        # If it still isn't numeric (e.g., bad value), keep original text
-                        new_row.append(num if num is not None else ("" if val is None else str(val)))
-                    else:
-                        new_row.append(smart_convert(val))
-            ws.append(new_row)
+        for row in reader:
+            # Coerce every value to string, keep empty cells as empty strings
+            ws.append(["" if v is None else str(v) for v in row])
+
+    # Save to destination workbook
+    # If workbook was newly created, consider removing default sheet if empty and not our target
+    if "Sheet" in wb.sheetnames and wb["Sheet"].max_row == 1 and wb["Sheet"].max_column == 1 and wb["Sheet"] != ws:
+        # Empty default sheet created by Workbook()
+        try:
+            wb.remove(wb["Sheet"])
+        except Exception:
+            pass
 
     wb.save(dst)
     return sheet_name
 
-if __name__ == "__main__":
-    final_sheet = csv_to_existing_xlsx(
-        SRC_CSV, DST_XLSX, SHEET_NAME,
-        delimiter=FORCE_DELIMITER, encoding=ENCODING, overwrite_sheet=OVERWRITE_SHEET
-    )
-    print(f"Done: wrote CSV to '{DST_XLSX}' sheet '{final_sheet}' (headers preserved, E/F numeric).")
+def main():
+    root = tk.Tk()
+    root.withdraw()
 
+    messagebox.showinfo(
+        "CSV → Excel",
+        "Choose the source CSV file, then choose the destination Excel file (.xlsx).\n"
+        "Data will be copied as-is into the chosen sheet, overwriting its contents."
+    )
+
+    # 1) Pick CSV
+    csv_path_str = filedialog.askopenfilename(
+        title="Select CSV file",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+    if not csv_path_str:
+        messagebox.showwarning("Cancelled", "No CSV selected.")
+        return
+    src_csv = Path(csv_path_str)
+
+    # 2) Pick destination XLSX (existing or new)
+    xlsx_path_str = filedialog.asksaveasfilename(
+        title="Select or create destination Excel file",
+        defaultextension=".xlsx",
+        filetypes=[("Excel Workbook", "*.xlsx")]
+    )
+    if not xlsx_path_str:
+        messagebox.showwarning("Cancelled", "No destination Excel selected.")
+        return
+    dst_xlsx = Path(xlsx_path_str)
+
+    # 3) Sheet name (default “Inputfile”)
+    sheet_name = simpledialog.askstring(
+        "Sheet name",
+        "Enter target sheet name:",
+        initialvalue="Inputfile",
+        parent=root
+    )
+    if not sheet_name:
+        messagebox.showwarning("Cancelled", "No sheet name provided.")
+        return
+
+    try:
+        final_sheet = csv_to_existing_xlsx(
+            src=src_csv,
+            dst=dst_xlsx,
+            sheet_name=sheet_name,
+            delimiter=None,         # auto-detect
+            encoding="utf-8",       # common default; replaces bad bytes
+            overwrite_sheet=True    # clear & paste from A1
+        )
+        messagebox.showinfo(
+            "Done",
+            f"Copied CSV to '{dst_xlsx.name}' → sheet '{final_sheet}'."
+        )
+        print(f"Done: wrote CSV to '{dst_xlsx}' sheet '{final_sheet}'.")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+        raise
+
+if __name__ == "__main__":
+    main()
