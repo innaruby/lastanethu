@@ -1,11 +1,10 @@
 import csv
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
-
-# --- minimal GUI selectors ---
 import tkinter as tk
-from tkinter import filedialog, simpledialog, messagebox
+from tkinter import filedialog, messagebox
 
+# ---------- helpers ----------
 def detect_delimiter(path: Path, encoding="utf-8") -> str:
     with path.open("r", encoding=encoding, newline="") as f:
         sample = f.read(4096)
@@ -16,109 +15,113 @@ def detect_delimiter(path: Path, encoding="utf-8") -> str:
             for d in [",", ";", "\t", "|"]:
                 if d in sample:
                     return d
-            return ","  # safe fallback
+            return ","  # fallback
 
-def csv_to_existing_xlsx(src: Path, dst: Path, sheet_name: str,
-                         delimiter=None, encoding="utf-8", overwrite_sheet=True):
+def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten",
+                           encoding="utf-8", delimiter=None):
     if not src.exists():
-        raise FileNotFoundError(src)
+        raise FileNotFoundError(f"Source not found: {src}")
 
-    # Load or create workbook
     if dst.exists():
         wb = load_workbook(dst)
     else:
         wb = Workbook()
 
-    # Prepare sheet (create if needed, otherwise clear it)
+    # get or create target sheet
     if sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        if overwrite_sheet:
-            ws.delete_rows(1, ws.max_row or 1)
+        # clear existing content
+        ws.delete_rows(1, ws.max_row or 1)
     else:
         ws = wb.create_sheet(title=sheet_name)
 
-    # Detect delimiter if not given
+    # auto-detect delimiter if not provided
     if delimiter is None:
         delimiter = detect_delimiter(src, encoding=encoding)
 
-    # Copy rows EXACTLY as text (no type conversions)
+    # append rows as text (no type conversion)
     with src.open("r", encoding=encoding, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delimiter)
         for row in reader:
-            # Coerce every value to string, keep empty cells as empty strings
             ws.append(["" if v is None else str(v) for v in row])
 
-    # Save to destination workbook
-    # If workbook was newly created, consider removing default sheet if empty and not our target
-    if "Sheet" in wb.sheetnames and wb["Sheet"].max_row == 1 and wb["Sheet"].max_column == 1 and wb["Sheet"] != ws:
-        # Empty default sheet created by Workbook()
-        try:
-            wb.remove(wb["Sheet"])
-        except Exception:
-            pass
+    # remove the default empty sheet if we created a new workbook
+    if "Sheet" in wb.sheetnames and wb["Sheet"] != ws:
+        sh = wb["Sheet"]
+        if sh.max_row == 1 and sh.max_column == 1 and sh["A1"].value in (None, ""):
+            try:
+                wb.remove(sh)
+            except Exception:
+                pass
 
     wb.save(dst)
-    return sheet_name
 
+# ---------- GUI ----------
 def main():
     root = tk.Tk()
-    root.withdraw()
+    root.title("CSV → Excel (Input-Daten)")
 
-    messagebox.showinfo(
-        "CSV → Excel",
-        "Choose the source CSV file, then choose the destination Excel file (.xlsx).\n"
-        "Data will be copied as-is into the chosen sheet, overwriting its contents."
-    )
+    src_var = tk.StringVar()
+    dst_var = tk.StringVar()
+    status_var = tk.StringVar(value="Select files, then click Execute.")
 
-    # 1) Pick CSV
-    csv_path_str = filedialog.askopenfilename(
-        title="Select CSV file",
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-    )
-    if not csv_path_str:
-        messagebox.showwarning("Cancelled", "No CSV selected.")
-        return
-    src_csv = Path(csv_path_str)
-
-    # 2) Pick destination XLSX (existing or new)
-    xlsx_path_str = filedialog.asksaveasfilename(
-        title="Select or create destination Excel file",
-        defaultextension=".xlsx",
-        filetypes=[("Excel Workbook", "*.xlsx")]
-    )
-    if not xlsx_path_str:
-        messagebox.showwarning("Cancelled", "No destination Excel selected.")
-        return
-    dst_xlsx = Path(xlsx_path_str)
-
-    # 3) Sheet name (default “Inputfile”)
-    sheet_name = simpledialog.askstring(
-        "Sheet name",
-        "Enter target sheet name:",
-        initialvalue="Inputfile",
-        parent=root
-    )
-    if not sheet_name:
-        messagebox.showwarning("Cancelled", "No sheet name provided.")
-        return
-
-    try:
-        final_sheet = csv_to_existing_xlsx(
-            src=src_csv,
-            dst=dst_xlsx,
-            sheet_name=sheet_name,
-            delimiter=None,         # auto-detect
-            encoding="utf-8",       # common default; replaces bad bytes
-            overwrite_sheet=True    # clear & paste from A1
+    def browse_src():
+        path = filedialog.askopenfilename(
+            title="Select Source CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
-        messagebox.showinfo(
-            "Done",
-            f"Copied CSV to '{dst_xlsx.name}' → sheet '{final_sheet}'."
+        if path:
+            src_var.set(path)
+            update_execute_state()
+
+    def browse_dst():
+        path = filedialog.asksaveasfilename(
+            title="Select or Create Destination Excel (.xlsx)",
+            defaultextension=".xlsx",
+            filetypes=[("Excel Workbook", "*.xlsx")]
         )
-        print(f"Done: wrote CSV to '{dst_xlsx}' sheet '{final_sheet}'.")
-    except Exception as e:
-        messagebox.showerror("Error", str(e))
-        raise
+        if path:
+            dst_var.set(path)
+            update_execute_state()
+
+    def update_execute_state():
+        btn_exec.config(state="normal" if (src_var.get() and dst_var.get()) else "disabled")
+
+    def execute():
+        src = Path(src_var.get().strip())
+        dst = Path(dst_var.get().strip())
+        if not src or not dst:
+            messagebox.showwarning("Missing", "Please select both files.")
+            return
+        try:
+            status_var.set("Working…")
+            root.update_idletasks()
+            copy_csv_to_xlsx_sheet(src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None)
+            status_var.set(f"Done: copied to '{dst.name}' → sheet 'Input-Daten'.")
+            messagebox.showinfo("Success", f"Copied data to:\n{dst}\nSheet: Input-Daten")
+        except Exception as e:
+            status_var.set("Error.")
+            messagebox.showerror("Error", str(e))
+
+    # layout
+    frm = tk.Frame(root, padx=12, pady=12)
+    frm.grid(row=0, column=0, sticky="nsew")
+
+    tk.Label(frm, text="Source CSV:").grid(row=0, column=0, sticky="w")
+    tk.Entry(frm, textvariable=src_var, width=60).grid(row=0, column=1, padx=6)
+    tk.Button(frm, text="Browse…", command=browse_src).grid(row=0, column=2)
+
+    tk.Label(frm, text="Destination XLSX:").grid(row=1, column=0, sticky="w", pady=(8,0))
+    tk.Entry(frm, textvariable=dst_var, width=60).grid(row=1, column=1, padx=6, pady=(8,0))
+    tk.Button(frm, text="Browse…", command=browse_dst).grid(row=1, column=2, pady=(8,0))
+
+    btn_exec = tk.Button(frm, text="Execute", command=execute, state="disabled")
+    btn_exec.grid(row=2, column=0, columnspan=3, pady=(12,0), sticky="ew")
+
+    tk.Label(frm, textvariable=status_var, anchor="w").grid(row=3, column=0, columnspan=3, sticky="w", pady=(8,0))
+
+    root.resizable(False, False)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
