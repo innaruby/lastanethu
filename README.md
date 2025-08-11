@@ -64,6 +64,20 @@ def get_or_create_sheet(wb, name: str):
         ws = wb.create_sheet(title=name)
     return ws
 
+def save_ws_as_workbook(ws_source, out_path: Path, title: str):
+    """Create a new xlsx with a single sheet copied from ws_source (values only)."""
+    wb_new = Workbook()
+    ws_new = wb_new.active
+    ws_new.title = title
+    ws_new.delete_rows(1, ws_new.max_row or 1)
+
+    max_col = ws_source.max_column
+    for r in range(1, ws_source.max_row + 1):
+        row_vals = [ws_source.cell(row=r, column=c).value for c in range(1, max_col + 1)]
+        ws_new.append(row_vals)
+
+    wb_new.save(out_path)
+
 def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten",
                            encoding="utf-8", delimiter=None):
     if not src.exists():
@@ -152,7 +166,6 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
             ws.delete_rows(r, 1)
 
     # 5) Split rows into "Fee auswertung per" vs "Fee auswertung"
-    #    based on E ∈ {300,802,803,804,850}
     ws_in = ws
     max_col = ws_in.max_column
 
@@ -161,7 +174,6 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
     ws_fee = get_or_create_sheet(wb, "Fee auswertung")
 
     header = [ws_in.cell(row=1, column=c).value for c in range(1, max_col + 1)]
-    # Guarantee at least 6 columns so we can write column F later
     while len(header) < 6:
         header.append("")
     ws_per.append(header)
@@ -169,7 +181,6 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
 
     for r in range(2, ws_in.max_row + 1):
         row_vals = [ws_in.cell(row=r, column=c).value for c in range(1, max_col + 1)]
-        # Ensure at least 6 columns
         if len(row_vals) < 6:
             row_vals += [""] * (6 - len(row_vals))
         e_val = ws_in.cell(row=r, column=5).value
@@ -183,14 +194,39 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
     label = f"Transfer FEE {today.month:02d}/{today.year % 100:02d}"
 
     for ws_target in (ws_per, ws_fee):
-        # Clear F
         for r in range(2, ws_target.max_row + 1):
             ws_target.cell(row=r, column=6).value = None
-        # Write label
         for r in range(2, ws_target.max_row + 1):
             ws_target.cell(row=r, column=6).value = label
 
+    # Save main workbook (keeps all three sheets)
     wb.save(dst)
+
+    # 7) Export the two fee sheets as separate files, next-month vs current-month names
+    # Compute month labels
+    cur_mm = today.month
+    cur_yy2 = today.year % 100
+    if cur_mm == 12:
+        nxt_mm, nxt_yy2 = 1, (today.year + 1) % 100
+    else:
+        nxt_mm, nxt_yy2 = cur_mm + 1, cur_yy2
+
+    # Labels for filenames (slashes are illegal on Windows → use '-')
+    cur_label = f"{cur_mm:02d}/{cur_yy2:02d}"
+    nxt_label = f"{nxt_mm:02d}/{nxt_yy2:02d}"
+    cur_label_safe = cur_label.replace("/", "-")
+    nxt_label_safe = nxt_label.replace("/", "-")
+
+    out_dir = dst.parent
+    path_fee = out_dir / f"Transfer FEE {cur_label_safe}.xlsx"
+    path_per = out_dir / f"Transfer FEE {nxt_label_safe}.xlsx"
+
+    # Write the single-sheet workbooks
+    save_ws_as_workbook(ws_fee, path_fee, "Fee auswertung")
+    save_ws_as_workbook(ws_per, path_per, "Fee auswertung per")
+
+    # Return the output paths for the GUI
+    return path_fee, path_per
 
 # ---------- GUI ----------
 def main():
@@ -232,21 +268,20 @@ def main():
         try:
             status_var.set("Working…")
             root.update_idletasks()
-            copy_csv_to_xlsx_sheet(src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None)
+            path_fee, path_per = copy_csv_to_xlsx_sheet(
+                src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None
+            )
             status_var.set(
-                f"Done: Input-Daten updated; mapping & cleanup applied; "
-                f"split into 'Fee auswertung per' and 'Fee auswertung' with F='Transfer FEE MM/YY'."
+                "Done: Input-Daten updated; split/exported fee sheets."
             )
             messagebox.showinfo(
                 "Success",
                 "Finished:\n"
-                f"- Copied CSV to: {dst}\n"
-                "- Sheet: Input-Daten\n"
-                "- Converted A,B,C,E to numeric (row 2+)\n"
-                "- Applied KSt Mapping (row 2+)\n"
-                "- Deleted rows where A == E (row 2+)\n"
-                "- Split to 'Fee auswertung per' (E in {300,802,803,804,850}) and 'Fee auswertung' (others)\n"
-                "- Set column F to 'Transfer FEE MM/YY' in both fee sheets"
+                f"- Base workbook updated: {dst}\n"
+                "- Exported:\n"
+                f"  • Fee auswertung  → {path_fee.name}\n"
+                f"  • Fee auswertung per → {path_per.name}\n\n"
+                "(Saved in the same folder as the destination workbook.)"
             )
         except Exception as e:
             status_var.set("Error.")
