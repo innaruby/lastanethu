@@ -48,22 +48,21 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
     # get or create target sheet
     if sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        # clear existing content
         ws.delete_rows(1, ws.max_row or 1)
     else:
         ws = wb.create_sheet(title=sheet_name)
 
-    # auto-detect delimiter if not provided
+    # detect delimiter
     if delimiter is None:
         delimiter = detect_delimiter(src, encoding=encoding)
 
-    # append rows as text initially
+    # copy CSV content
     with src.open("r", encoding=encoding, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delimiter)
         for row in reader:
             ws.append(["" if v is None else str(v) for v in row])
 
-    # remove the default empty sheet if we created a new workbook
+    # remove default empty sheet if present
     if "Sheet" in wb.sheetnames and wb["Sheet"] != ws:
         sh = wb["Sheet"]
         if sh.max_row == 1 and sh.max_column == 1 and sh["A1"].value in (None, ""):
@@ -72,13 +71,35 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
             except Exception:
                 pass
 
-    # --- Explicit numeric conversion for columns A,B,C,E from row 2 ---
-    numeric_cols = [1, 2, 3, 5]  # 1-based indexes: A=1, B=2, C=3, E=5
+    # numeric conversion for columns A,B,C,E (row 2+)
+    numeric_cols = [1, 2, 3, 5]  # 1-based indexes
     for col in numeric_cols:
         for row in range(2, ws.max_row + 1):
             val = ws.cell(row=row, column=col).value
             num = force_number(val)
             ws.cell(row=row, column=col).value = num
+
+    # --- Mapping update from KSt Mapping (ROW 2 ONLY) ---
+    if "KSt Mapping" in wb.sheetnames:
+        ws_map = wb["KSt Mapping"]
+
+        # Build dict from row 2 onward: Column A -> Column B
+        mapping_dict = {}
+        for r in range(2, ws_map.max_row + 1):  # start from row 2 (explicit)
+            key_raw = ws_map.cell(row=r, column=1).value  # col A
+            val_map = ws_map.cell(row=r, column=2).value  # col B
+            # Coerce key to numeric if possible to match Input-Daten numeric columns
+            key_num = force_number(key_raw)
+            key = key_num if key_num is not None else (key_raw if key_raw not in (None, "") else None)
+            if key is not None:
+                mapping_dict[key] = val_map
+
+        # Update A and E in Input-Daten (row 2+)
+        for r in range(2, ws.max_row + 1):
+            for col in [1, 5]:  # A=1, E=5
+                old_val = ws.cell(row=r, column=col).value
+                if old_val in mapping_dict:
+                    ws.cell(row=r, column=col).value = mapping_dict[old_val]
 
     wb.save(dst)
 
@@ -123,9 +144,15 @@ def main():
             status_var.set("Working…")
             root.update_idletasks()
             copy_csv_to_xlsx_sheet(src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None)
-            status_var.set(f"Done: copied to '{dst.name}' → sheet 'Input-Daten'.")
-            messagebox.showinfo("Success", f"Copied data to:\n{dst}\nSheet: Input-Daten\n"
-                                           f"Columns A,B,C,E converted to numeric from row 2.")
+            status_var.set(f"Done: copied to '{dst.name}' → 'Input-Daten'. Mapping (row 2+) applied.")
+            messagebox.showinfo(
+                "Success",
+                "Copied data to:\n"
+                f"{dst}\n\n"
+                "Sheet: Input-Daten\n"
+                "Converted A,B,C,E to numeric from row 2.\n"
+                "Applied KSt Mapping (rows from 2 only) to columns A & E."
+            )
         except Exception as e:
             status_var.set("Error.")
             messagebox.showerror("Error", str(e))
