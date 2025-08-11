@@ -35,34 +35,44 @@ def force_number(v):
     except ValueError:
         return None
 
+def canonical_for_compare(v):
+    """Normalize for equality check: prefer numeric if possible, else trimmed string or None."""
+    num = force_number(v)
+    if num is not None:
+        return num
+    if v is None:
+        return None
+    return str(v).strip()
+
 def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten",
                            encoding="utf-8", delimiter=None):
     if not src.exists():
         raise FileNotFoundError(f"Source not found: {src}")
 
+    # Load or create workbook
     if dst.exists():
         wb = load_workbook(dst)
     else:
         wb = Workbook()
 
-    # get or create target sheet
+    # Get or create target sheet
     if sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         ws.delete_rows(1, ws.max_row or 1)
     else:
         ws = wb.create_sheet(title=sheet_name)
 
-    # detect delimiter
+    # Detect delimiter
     if delimiter is None:
         delimiter = detect_delimiter(src, encoding=encoding)
 
-    # copy CSV content
+    # Copy CSV content as text
     with src.open("r", encoding=encoding, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delimiter)
         for row in reader:
             ws.append(["" if v is None else str(v) for v in row])
 
-    # remove default empty sheet if present
+    # Remove default empty sheet if present
     if "Sheet" in wb.sheetnames and wb["Sheet"] != ws:
         sh = wb["Sheet"]
         if sh.max_row == 1 and sh.max_column == 1 and sh["A1"].value in (None, ""):
@@ -71,35 +81,59 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
             except Exception:
                 pass
 
-    # numeric conversion for columns A,B,C,E (row 2+)
-    numeric_cols = [1, 2, 3, 5]  # 1-based indexes
+    # 1) Numeric conversion for A,B,C,E (row 2+)
+    numeric_cols = [1, 2, 3, 5]  # A=1, B=2, C=3, E=5
     for col in numeric_cols:
         for row in range(2, ws.max_row + 1):
             val = ws.cell(row=row, column=col).value
-            num = force_number(val)
-            ws.cell(row=row, column=col).value = num
+            ws.cell(row=row, column=col).value = force_number(val)
 
-    # --- Mapping update from KSt Mapping (ROW 2 ONLY) ---
+    # 2) Mapping update from KSt Mapping (ROW 2 ONLY) -> update A & E
     if "KSt Mapping" in wb.sheetnames:
         ws_map = wb["KSt Mapping"]
 
         # Build dict from row 2 onward: Column A -> Column B
         mapping_dict = {}
-        for r in range(2, ws_map.max_row + 1):  # start from row 2 (explicit)
-            key_raw = ws_map.cell(row=r, column=1).value  # col A
-            val_map = ws_map.cell(row=r, column=2).value  # col B
-            # Coerce key to numeric if possible to match Input-Daten numeric columns
-            key_num = force_number(key_raw)
-            key = key_num if key_num is not None else (key_raw if key_raw not in (None, "") else None)
-            if key is not None:
-                mapping_dict[key] = val_map
+        for r in range(2, ws_map.max_row + 1):  # start row 2
+            key_raw = ws_map.cell(row=r, column=1).value   # A
+            val_raw = ws_map.cell(row=r, column=2).value   # B
+            # Coerce keys to numeric if possible so they match numeric A/E
+            key = force_number(key_raw)
+            if key is None:
+                if key_raw is None or str(key_raw).strip() == "":
+                    continue
+                key = str(key_raw).strip()
+            # Optionally coerce mapped value to numeric (helps keep A/E numeric)
+            val = force_number(val_raw)
+            if val is None and val_raw not in (None, ""):
+                val = str(val_raw).strip()
+            mapping_dict[key] = val
 
-        # Update A and E in Input-Daten (row 2+)
+        # Apply mapping to columns A and E (row 2+)
         for r in range(2, ws.max_row + 1):
-            for col in [1, 5]:  # A=1, E=5
+            for col in (1, 5):  # A, E
                 old_val = ws.cell(row=r, column=col).value
-                if old_val in mapping_dict:
-                    ws.cell(row=r, column=col).value = mapping_dict[old_val]
+                key_num = force_number(old_val)
+                key = key_num if key_num is not None else (str(old_val).strip() if old_val not in (None, "") else None)
+                if key in mapping_dict:
+                    ws.cell(row=r, column=col).value = mapping_dict[key]
+
+    # 3) Re-coerce A & E to numeric after mapping (row 2+)
+    for col in (1, 5):
+        for row in range(2, ws.max_row + 1):
+            val = ws.cell(row=row, column=col).value
+            num = force_number(val)
+            if num is not None:
+                ws.cell(row=row, column=col).value = num
+
+    # 4) Delete rows (row 2+) where A == E (numeric-aware, and only if both non-empty)
+    for r in range(ws.max_row, 1, -1):  # bottom-up deletion
+        a_val = ws.cell(row=r, column=1).value
+        e_val = ws.cell(row=r, column=5).value
+        a_can = canonical_for_compare(a_val)
+        e_can = canonical_for_compare(e_val)
+        if a_can is not None and e_can is not None and a_can == e_can:
+            ws.delete_rows(r, 1)
 
     wb.save(dst)
 
@@ -144,14 +178,18 @@ def main():
             status_var.set("Working…")
             root.update_idletasks()
             copy_csv_to_xlsx_sheet(src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None)
-            status_var.set(f"Done: copied to '{dst.name}' → 'Input-Daten'. Mapping (row 2+) applied.")
+            status_var.set(
+                f"Done: copied to '{dst.name}' → 'Input-Daten'. "
+                f"Numeric A,B,C,E; mapping applied; duplicate A==E rows removed."
+            )
             messagebox.showinfo(
                 "Success",
-                "Copied data to:\n"
-                f"{dst}\n\n"
-                "Sheet: Input-Daten\n"
-                "Converted A,B,C,E to numeric from row 2.\n"
-                "Applied KSt Mapping (rows from 2 only) to columns A & E."
+                "Finished:\n"
+                f"- Copied CSV to: {dst}\n"
+                "- Sheet: Input-Daten\n"
+                "- Converted A,B,C,E to numeric (row 2+)\n"
+                "- Applied KSt Mapping (row 2+)\n"
+                "- Deleted rows where A == E (row 2+)"
             )
         except Exception as e:
             status_var.set("Error.")
