@@ -1,5 +1,6 @@
 import csv
 from pathlib import Path
+from datetime import date
 from openpyxl import Workbook, load_workbook
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -44,6 +45,25 @@ def canonical_for_compare(v):
         return None
     return str(v).strip()
 
+def value_in_fee_per_bucket(v):
+    """True if E belongs to {300,802,803,804,850} (numeric-aware)."""
+    codes = {300, 802, 803, 804, 850}
+    n = force_number(v)
+    if n is not None:
+        if isinstance(n, float) and n.is_integer():
+            n = int(n)
+        return n in codes
+    s = str(v).strip() if v is not None else ""
+    return s in {str(x) for x in codes}
+
+def get_or_create_sheet(wb, name: str):
+    if name in wb.sheetnames:
+        ws = wb[name]
+        ws.delete_rows(1, ws.max_row or 1)
+    else:
+        ws = wb.create_sheet(title=name)
+    return ws
+
 def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten",
                            encoding="utf-8", delimiter=None):
     if not src.exists():
@@ -56,11 +76,7 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
         wb = Workbook()
 
     # Get or create target sheet
-    if sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        ws.delete_rows(1, ws.max_row or 1)
-    else:
-        ws = wb.create_sheet(title=sheet_name)
+    ws = get_or_create_sheet(wb, sheet_name)
 
     # Detect delimiter
     if delimiter is None:
@@ -103,7 +119,7 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
                 if key_raw is None or str(key_raw).strip() == "":
                     continue
                 key = str(key_raw).strip()
-            # Optionally coerce mapped value to numeric (helps keep A/E numeric)
+            # Coerce mapped value to numeric when possible
             val = force_number(val_raw)
             if val is None and val_raw not in (None, ""):
                 val = str(val_raw).strip()
@@ -134,6 +150,45 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
         e_can = canonical_for_compare(e_val)
         if a_can is not None and e_can is not None and a_can == e_can:
             ws.delete_rows(r, 1)
+
+    # 5) Split rows into "Fee auswertung per" vs "Fee auswertung"
+    #    based on E ∈ {300,802,803,804,850}
+    ws_in = ws
+    max_col = ws_in.max_column
+
+    # Ensure targets fresh and copy header
+    ws_per = get_or_create_sheet(wb, "Fee auswertung per")
+    ws_fee = get_or_create_sheet(wb, "Fee auswertung")
+
+    header = [ws_in.cell(row=1, column=c).value for c in range(1, max_col + 1)]
+    # Guarantee at least 6 columns so we can write column F later
+    while len(header) < 6:
+        header.append("")
+    ws_per.append(header)
+    ws_fee.append(header)
+
+    for r in range(2, ws_in.max_row + 1):
+        row_vals = [ws_in.cell(row=r, column=c).value for c in range(1, max_col + 1)]
+        # Ensure at least 6 columns
+        if len(row_vals) < 6:
+            row_vals += [""] * (6 - len(row_vals))
+        e_val = ws_in.cell(row=r, column=5).value
+        if value_in_fee_per_bucket(e_val):
+            ws_per.append(row_vals)
+        else:
+            ws_fee.append(row_vals)
+
+    # 6) Clear col F (row 2+) then write "Transfer FEE MM/YY" in both fee sheets
+    today = date.today()
+    label = f"Transfer FEE {today.month:02d}/{today.year % 100:02d}"
+
+    for ws_target in (ws_per, ws_fee):
+        # Clear F
+        for r in range(2, ws_target.max_row + 1):
+            ws_target.cell(row=r, column=6).value = None
+        # Write label
+        for r in range(2, ws_target.max_row + 1):
+            ws_target.cell(row=r, column=6).value = label
 
     wb.save(dst)
 
@@ -179,8 +234,8 @@ def main():
             root.update_idletasks()
             copy_csv_to_xlsx_sheet(src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None)
             status_var.set(
-                f"Done: copied to '{dst.name}' → 'Input-Daten'. "
-                f"Numeric A,B,C,E; mapping applied; duplicate A==E rows removed."
+                f"Done: Input-Daten updated; mapping & cleanup applied; "
+                f"split into 'Fee auswertung per' and 'Fee auswertung' with F='Transfer FEE MM/YY'."
             )
             messagebox.showinfo(
                 "Success",
@@ -189,7 +244,9 @@ def main():
                 "- Sheet: Input-Daten\n"
                 "- Converted A,B,C,E to numeric (row 2+)\n"
                 "- Applied KSt Mapping (row 2+)\n"
-                "- Deleted rows where A == E (row 2+)"
+                "- Deleted rows where A == E (row 2+)\n"
+                "- Split to 'Fee auswertung per' (E in {300,802,803,804,850}) and 'Fee auswertung' (others)\n"
+                "- Set column F to 'Transfer FEE MM/YY' in both fee sheets"
             )
         except Exception as e:
             status_var.set("Error.")
