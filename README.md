@@ -17,6 +17,24 @@ def detect_delimiter(path: Path, encoding="utf-8") -> str:
                     return d
             return ","  # fallback
 
+def force_number(v):
+    """Try to convert to int/float; return None if not possible."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    v = str(v).strip()
+    if v == "":
+        return None
+    v = v.replace(",", ".")
+    try:
+        if "." in v:
+            return float(v)
+        else:
+            return int(v)
+    except ValueError:
+        return None
+
 def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten",
                            encoding="utf-8", delimiter=None):
     if not src.exists():
@@ -39,7 +57,7 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
     if delimiter is None:
         delimiter = detect_delimiter(src, encoding=encoding)
 
-    # append rows as text (no type conversion)
+    # append rows as text initially
     with src.open("r", encoding=encoding, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delimiter)
         for row in reader:
@@ -53,6 +71,14 @@ def copy_csv_to_xlsx_sheet(src: Path, dst: Path, sheet_name: str = "Input-Daten"
                 wb.remove(sh)
             except Exception:
                 pass
+
+    # --- Explicit numeric conversion for columns A,B,C,E from row 2 ---
+    numeric_cols = [1, 2, 3, 5]  # 1-based indexes: A=1, B=2, C=3, E=5
+    for col in numeric_cols:
+        for row in range(2, ws.max_row + 1):
+            val = ws.cell(row=row, column=col).value
+            num = force_number(val)
+            ws.cell(row=row, column=col).value = num
 
     wb.save(dst)
 
@@ -98,7 +124,8 @@ def main():
             root.update_idletasks()
             copy_csv_to_xlsx_sheet(src, dst, sheet_name="Input-Daten", encoding="utf-8", delimiter=None)
             status_var.set(f"Done: copied to '{dst.name}' → sheet 'Input-Daten'.")
-            messagebox.showinfo("Success", f"Copied data to:\n{dst}\nSheet: Input-Daten")
+            messagebox.showinfo("Success", f"Copied data to:\n{dst}\nSheet: Input-Daten\n"
+                                           f"Columns A,B,C,E converted to numeric from row 2.")
         except Exception as e:
             status_var.set("Error.")
             messagebox.showerror("Error", str(e))
