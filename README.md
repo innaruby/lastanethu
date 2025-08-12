@@ -1,215 +1,317 @@
+
+
+
+
 import pandas as pd
-import numpy as np
 from pathlib import Path
-import re
 
-# =========================
-# Paths
-# =========================
-path_tab_em = r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_EM_ICAAP.csv"
-path_ek_basis = r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\EK_Basis_Primaerbanken.csv"
-out_base = r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\EK_Basis_Final"
+FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_Risiko_ICAAP.csv")  # no header
+FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\RK_Basis_Primaerbanken.csv")  # has header
+OUTPUT_CSV  = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\RK_Basis_Final.csv")
+OUTPUT_XLSX = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\RK_Basis_Final.xlsx")  # optional
 
-# =========================
-# Helpers
-# =========================
-def robust_read_no_header(path: str) -> pd.DataFrame:
-    """Read CSV without headers, trying different delimiters/encodings."""
-    try:
-        df = pd.read_csv(path, header=None, sep=None, engine="python", dtype=str, encoding="utf-8-sig")
-    except Exception:
-        df = None
-    if df is None or df.shape[1] == 1:
+
+DELIMS = [",", ";", "\t", "|"]
+
+def read_csv_flexible(path: Path, has_header: bool, prefer_utf8: bool = True) -> pd.DataFrame:
+    """
+    Try encodings and delimiters to read messy CSVs robustly.
+    """
+    encs = ["utf-8-sig", "latin-1"] if prefer_utf8 else ["latin-1", "utf-8-sig"]
+    header = 0 if has_header else None
+    last_err = None
+
+    for enc in encs:
+        # First try automatic sep detection
         try:
-            df = pd.read_csv(path, header=None, sep=";", dtype=str, encoding="utf-8-sig")
-        except Exception:
-            df = None
-    if df is None or df.shape[1] == 1:
-        try:
-            df = pd.read_csv(path, header=None, sep=None, engine="python", dtype=str, encoding="cp1252")
-        except Exception:
-            df = None
-    if df is None or df.shape[1] == 1:
-        df = pd.read_csv(path, header=None, sep=",", dtype=str, encoding="cp1252")
+            df = pd.read_csv(
+                path,
+                header=header,
+                sep=None,            # let parser detect
+                engine="python",
+                encoding=enc,
+                on_bad_lines="skip", # or "warn" to inspect issues
+                skipinitialspace=True,
+                na_filter=False,
+            )
+            return df
+        except Exception as e:
+            last_err = e
+        # Then try known delimiters
+        for sep in DELIMS:
+            try:
+                df = pd.read_csv(
+                    path,
+                    header=header,
+                    sep=sep,
+                    engine="python",
+                    encoding=enc,
+                    on_bad_lines="skip",
+                    skipinitialspace=True,
+                    na_filter=False,
+                )
+                return df
+            except Exception as e:
+                last_err = e
+
+    raise RuntimeError(f"Could not read {path}: {last_err}")
+
+def to_int64(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").astype("Int64")
+
+def to_float_from_maybe_comma(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s.astype(str).str.replace(",", ".", regex=False), errors="coerce")
+
+def read_tab_risiko_icaap(file1: Path) -> pd.DataFrame:
+    df = read_csv_flexible(file1, has_header=False)
+    df.columns = [f"Column{i+1}" for i in range(df.shape[1])]
+
+    for col in ["Column1", "Column7", "Column8"]:
+        if col in df: df[col] = to_int64(df[col])
+    for col in ["Column2", "Column9"]:
+        if col in df: df[col] = df[col].astype(str)
+
+    if "Column11" in df: df["Column11"] = pd.to_numeric(df["Column11"], errors="coerce")
+    if "Column9"  in df: df["Column9"]  = pd.to_numeric(df["Column9"],  errors="coerce")
+
+    df = df.rename(columns={
+        "Column1": "BLZ",
+        "Column2": "Rating_od_wNote",
+        "Column3": "Rating_Kategorie",
+        "Column4": "Forderungsklasse",
+        "Column5": "Risikokundengruppe",
+    })
+
+    if "Rating_od_wNote" in df:
+        df["Copy of Rating_od_wNote"] = df["Rating_od_wNote"]
+    df = df.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
+
+    reorder_1 = [
+        "BLZ","Rating_od_wNote_Original","Copy of Rating_od_wNote","Rating_Kategorie",
+        "Forderungsklasse","Risikokundengruppe","Column6","Column7","Column8","Column9","Column10","Column11"
+    ]
+    cols_existing = [c for c in reorder_1 if c in df.columns]
+    df = df[cols_existing + [c for c in df.columns if c not in cols_existing]]
+    df = df.rename(columns={"Copy of Rating_od_wNote": "Rating_od_wNote_Hilfsspalte"})
+
+    if "Column6" in df: df = df.drop(columns=["Column6"])
+
+    if "Rating_od_wNote_Hilfsspalte" in df:
+        df["Rating_od_wNote_Hilfsspalte"] = df["Rating_od_wNote_Hilfsspalte"].astype(str).str.replace(".", ",", regex=False)
+
+    def compute_rating(row):
+        rk = str(row.get("Rating_Kategorie", ""))
+        fk = str(row.get("Forderungsklasse", ""))
+        if rk in {"10","11","12"} or fk in {"1","2","3","4","5"}:
+            return row.get("Rating_od_wNote_Hilfsspalte", "")
+        return row.get("Rating_od_wNote_Original", "")
+
+    df["Rating_od_wNote"] = df.apply(compute_rating, axis=1)
+
+    reorder_2 = [
+        "BLZ","Rating_od_wNote","Rating_od_wNote_Original","Rating_od_wNote_Hilfsspalte",
+        "Rating_Kategorie","Forderungsklasse","Risikokundengruppe","Column7","Column8","Column9","Column10","Column11"
+    ]
+    cols_existing = [c for c in reorder_2 if c in df.columns]
+    df = df[cols_existing + [c for c in df.columns if c not in cols_existing]]
+
+    df = df.rename(columns={
+        "Column7": "Laufzeit_Von_(in_Tagen)",
+        "Column8": "Laufzeit_Bis_(in_Tagen)",
+        "Column9": "Risikokostensatz_Fix_(in_%)",
+        "Column10":"Risikokostensatz_Variabel_(in_%)",
+        "Column11":"Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)",
+    })
+
+    if "Risikokundengruppe" in df:
+        df["Risikokundengruppe"] = df["Risikokundengruppe"].astype(str).str.replace("-2", "", regex=False)
+
+    if "Rating_od_wNote" in df:
+        df = df[~df["Rating_od_wNote"].astype(str).isin({"-1,0","-1.0","-2,0","-2.0"})]
+
+    df = df.drop(columns=[c for c in ["Rating_od_wNote_Original","Rating_od_wNote_Hilfsspalte"] if c in df.columns])
+
+    final_order = [
+        "BLZ","Rating_Kategorie","Rating_od_wNote","Forderungsklasse","Risikokundengruppe",
+        "Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)",
+        "Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
+    ]
+    df = df[[c for c in final_order if c in df.columns]]
+
+    for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
+        if col in df: df[col] = to_int64(df[col])
+    for col in ["Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"]:
+        if col in df: df[col] = to_float_from_maybe_comma(df[col])
+
     return df
 
-def robust_read_with_header(path: str) -> pd.DataFrame:
-    """Read CSV with headers, trying different delimiters/encodings."""
-    try:
-        df = pd.read_csv(path, sep=None, engine="python", dtype=str, encoding="utf-8-sig")
-    except Exception:
-        df = None
-    if df is None or df.shape[1] == 1:
-        try:
-            df = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig")
-        except Exception:
-            df = None
-    if df is None or df.shape[1] == 1:
-        try:
-            df = pd.read_csv(path, sep=None, engine="python", dtype=str, encoding="cp1252")
-        except Exception:
-            df = None
-    if df is None or df.shape[1] == 1:
-        df = pd.read_csv(path, sep=";", dtype=str, encoding="cp1252")
-    df.columns = df.columns.astype(str).str.replace("\ufeff", "", regex=False).str.strip()
+def read_rk_basis_primaerbanken(file2: Path) -> pd.DataFrame:
+    df = read_csv_flexible(file2, has_header=True)
+
+    if "BLZ" not in df.columns:
+        raise ValueError("Expected column 'BLZ' not found in RK_Basis_Primaerbanken.csv")
+    df = df[df["BLZ"].astype(str) == "34"]
+
+    ordered_cols = [
+        "BLZ","Rating_od_wNote","Rating_Kategorie","Forderungsklasse","Risikokundengruppe",
+        "Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)","Risikokostensatz_Fix_(in_%)",
+        "Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
+    ]
+    missing = [c for c in ordered_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing expected columns in RK_Basis_Primaerbanken.csv: {missing}")
+    df = df[ordered_cols]
+
+    for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
+        df[col] = to_int64(df[col])
+    for col in ["Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"]:
+        df[col] = to_float_from_maybe_comma(df[col])
+
     return df
 
-def ensure_min_columns(df: pd.DataFrame, min_cols: int, context: str):
-    if df.shape[1] < min_cols:
-        raise ValueError(f"{context} has only {df.shape[1]} columns, expected >= {min_cols}")
+def combine_and_finalize(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
+    df = pd.concat([df1, df2], ignore_index=True)
 
-def to_us_number(s: pd.Series) -> pd.Series:
-    """Convert strings with comma or dot decimal to float."""
-    s = s.astype(str).str.replace(" ", "", regex=False)
-    s = s.str.replace(",", ".", regex=False)
-    return pd.to_numeric(s, errors="coerce")
+    for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
+        if col in df: df[col] = to_int64(df[col])
 
-# =========================
-# 1) Process Tab_EM_ICAAP.csv
-# =========================
-df1 = robust_read_no_header(path_tab_em)
-df1.columns = [f"Column{i+1}" for i in range(df1.shape[1])]
-ensure_min_columns(df1, 11, "Tab_EM_ICAAP.csv")
+    df = df[df["BLZ"] != 55000]
 
-df1["Column1"] = pd.to_numeric(df1["Column1"], errors="coerce").astype("Int64")
-df1["Column2"] = df1["Column2"].astype(str)
-df1["Column7"] = pd.to_numeric(df1["Column7"], errors="coerce").astype("Int64")
-df1["Column8"] = pd.to_numeric(df1["Column8"], errors="coerce").astype("Int64")
-df1["Column11"] = to_us_number(df1["Column11"])
-df1["Column9"]  = to_us_number(df1["Column9"])
+    if "Laufzeit_Bis_(in_Tagen)" in df:
+        df["Laufzeit_Bis_(in_Tagen)"] = df["Laufzeit_Bis_(in_Tagen)"].replace(365, 366)
+    if "Laufzeit_Von_(in_Tagen)" in df:
+        df["Laufzeit_Von_(in_Tagen)"] = df["Laufzeit_Von_(in_Tagen)"].replace(366, 367)
 
-df1 = df1.rename(columns={
-    "Column1": "BLZ",
-    "Column2": "Rating_od_wNote",
-    "Column3": "Rating_Kategorie",
-    "Column4": "Forderungsklasse",
-    "Column5": "Risikokundengruppe"
-})
-df1["Copy of Rating_od_wNote"] = df1["Rating_od_wNote"]
-df1 = df1.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
+    if "Risikokostensatz_Variabel_(in_%)" in df.columns:
+        if "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)" in df.columns:
+            df = df.drop(columns=["Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"])
+        df["Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"] = df["Risikokostensatz_Variabel_(in_%)"]
 
-df1 = df1[[c for c in [
-    "BLZ", "Rating_od_wNote_Original", "Copy of Rating_od_wNote", "Rating_Kategorie",
-    "Forderungsklasse", "Risikokundengruppe", "Column6", "Column7", "Column8",
-    "Column9", "Column10", "Column11"
-] if c in df1.columns]]
+    if "Rating_od_wNote" in df.columns:
+        df = df[~df["Rating_od_wNote"].astype(str).isin({"-1","-2"})]
 
-df1 = df1.rename(columns={"Copy of Rating_od_wNote": "Rating_od_wNote_Hilfsspalte"})
-if "Column6" in df1.columns:
-    df1 = df1.drop(columns=["Column6"])
-df1["Rating_od_wNote_Hilfsspalte"] = df1["Rating_od_wNote_Hilfsspalte"].astype(str).str.replace(".", ",", regex=False)
+    # Keep floats internally; we’ll format at export
+    df["Gueltig_Ab"] = ""
 
-def choose_rating(row):
-    if (str(row.get("Rating_Kategorie", "")) in {"10", "11", "12"}) or (str(row.get("Forderungsklasse", "")) in {"1","2","3","4","5"}):
-        return row.get("Rating_od_wNote_Hilfsspalte")
-    return row.get("Rating_od_wNote_Original")
+    final_order = [
+        "BLZ","Gueltig_Ab","Rating_Kategorie","Rating_od_wNote","Forderungsklasse",
+        "Risikokundengruppe","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)",
+        "Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)",
+        "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
+    ]
+    df = df[[c for c in final_order if c in df.columns]]
+    return df
 
-df1["Rating_od_wNote"] = df1.apply(choose_rating, axis=1)
+def main():
+    df1 = read_tab_risiko_icaap(FILE1_PATH)
+    df2 = read_rk_basis_primaerbanken(FILE2_PATH)
+    df_final = combine_and_finalize(df1, df2)
 
-df1 = df1.rename(columns={
-    "Column7": "Laufzeit_Von_(in_Tagen)",
-    "Column8": "Laufzeit_Bis_(in_Tagen)",
-    "Column9": "Risikokostensatz_Fix_(in_%)",
-    "Column10": "Risikokostensatz_Variabel_(in_%)",
-    "Column11": "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
-})
-if "Risikokundengruppe" in df1.columns:
-    df1["Risikokundengruppe"] = df1["Risikokundengruppe"].replace("-2", "")
-df1 = df1[~df1["Rating_od_wNote"].isin(["-1,0", "-1.0", "-2,0", "-2.0"])]
-df1 = df1.drop(columns=["Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte"], errors="ignore")
-if "Risikokundengruppe" in df1.columns:
-    df1 = df1.drop(columns=["Risikokundengruppe"])
-df1 = df1.rename(columns={
-    "Risikokostensatz_Fix_(in_%)": "Eigenkapitalkosten_Fix_(in_%)",
-    "Risikokostensatz_Variabel_(in_%)": "Eigenkapitalkosten_Variabel_(in_%)",
-    "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)": "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"
-})
+    OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
 
-# =========================
-# 2) Process EK_Basis_Primaerbanken.csv
-# =========================
-df2 = robust_read_with_header(path_ek_basis)
-blz_col = next((c for c in df2.columns if c.strip().lower() == "blz"), None)
-if blz_col is None:
-    raise ValueError(f"No BLZ column found. Found: {df2.columns.tolist()}")
-df2 = df2[df2[blz_col].astype(str).str.strip() == "34"]
-if blz_col != "BLZ":
-    df2 = df2.rename(columns={blz_col: "BLZ"})
+    # Save CSV for German/Austrian Excel: semicolon delimiter and comma decimal
+    df_final.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig", sep=";", decimal=",")
 
-for col in ["Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)"]:
-    if col in df2.columns:
-        df2[col] = pd.to_numeric(df2[col], errors="coerce").astype("Int64")
-for col in ["Eigenkapitalkosten_Fix_(in_%)", "Eigenkapitalkosten_Variabel_(in_%)", "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"]:
-    if col in df2.columns:
-        df2[col] = to_us_number(df2[col])
+    # Optional: also save XLSX (always displays as proper columns)
+    try:
+        df_final.to_excel(OUTPUT_XLSX, index=False)
+    except Exception:
+        pass
 
-# =========================
-# 3) Combine & final transformations
-# =========================
-all_cols = sorted(set(df1.columns).union(df2.columns))
-df_combined = pd.concat([df1.reindex(columns=all_cols), df2.reindex(columns=all_cols)], ignore_index=True)
+    print(f"Saved CSV:  {OUTPUT_CSV}")
+    print(f"Saved XLSX: {OUTPUT_XLSX}")
 
-if "BLZ" in df_combined.columns:
-    mask = ~((pd.to_numeric(df_combined["BLZ"], errors="coerce") == 55000) | (df_combined["BLZ"].astype(str).str.strip() == "55000"))
-    df_combined = df_combined[mask]
+if __name__ == "__main__":
+    main()
 
-if "Laufzeit_Bis_(in_Tagen)" in df_combined.columns:
-    df_combined["Laufzeit_Bis_(in_Tagen)"] = df_combined["Laufzeit_Bis_(in_Tagen)"].replace(365, 366)
-if "Laufzeit_Von_(in_Tagen)" in df_combined.columns:
-    df_combined["Laufzeit_Von_(in_Tagen)"] = df_combined["Laufzeit_Von_(in_Tagen)"].replace(366, 367)
-if "Rating_Kategorie" in df_combined.columns:
-    df_combined = df_combined[df_combined["Rating_Kategorie"].astype(str) != "9"]
 
-if "Eigenkapitalkosten_Variabel_(in_%)" in df_combined.columns:
-    df_combined["Eigenkapitalkosten_Variabel_(in_%) - Kopie"] = df_combined["Eigenkapitalkosten_Variabel_(in_%)"]
-if "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)" in df_combined.columns:
-    df_combined = df_combined.drop(columns=["Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"])
-if "Eigenkapitalkosten_Variabel_(in_%) - Kopie" in df_combined.columns:
-    df_combined = df_combined.rename(columns={"Eigenkapitalkosten_Variabel_(in_%) - Kopie": "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"})
+this is code 1 . Similar to Code 1 construct code 2 according to the following logic. 
+I need python code for the following power querys. At first open the file whose name is Tab_EM_ICAAP.csv          which is in directory 
 
-if "Rating_od_wNote" in df_combined.columns:
-    df_combined = df_combined[~df_combined["Rating_od_wNote"].isin(["-1", "-2"])]
 
-# =========================
-# 4) Enforce final order & remove header-like rows
-# =========================
-final_cols = [
-    "BLZ",
-    "Rating_Kategorie",
-    "Rating_od_wNote",
-    "Forderungsklasse",
-    "Laufzeit_Von_(in_Tagen)",
-    "Laufzeit_Bis_(in_Tagen)",
-    "Eigenkapitalkosten_Fix_(in_%)",
-    "Eigenkapitalkosten_Variabel_(in_%)",
-    "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)",
-]
-for c in final_cols:
-    if c not in df_combined.columns:
-        df_combined[c] = pd.NA
-df_final = df_combined.reindex(columns=final_cols)
+U: \Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien
 
-def is_headerish_row(row, columns, min_hits=3):
-    hits = row.astype(str).str.match(r'(?i)^column\d+$', na=False).sum()
-    equals_header = sum((str(row[col]).strip().casefold() == col.strip().casefold()) for col in columns)
-    return (hits + equals_header) >= min_hits
+Please do the following transformation steps. Please note that in this file in row 1 there are no column names .so please add some dummy names in rows so that further processing gets smoothy.
 
-mask_headerish = df_final.apply(lambda r: is_headerish_row(r, df_final.columns), axis=1)
-df_final = df_final[~mask_headerish].reset_index(drop=True)
 
-# =========================
-# 5) Save Excel + CSV
-# =========================
-out_dir = Path(out_base).parent
-out_dir.mkdir(parents=True, exist_ok=True)
+= Table.TransformColumnTypes(Quelle,{{"Column1", Int64.Type}, {"Column2", type text}, {"Column7", Int64.Type}, {"Column8", Int64.Type}, {"Column9", type text}})
 
-xlsx_path = out_base + ".xlsx"
-with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
-    df_final.to_excel(writer, sheet_name="EK_Basis_Final", index=False)
+= Table.TransformColumnTypes(#"Geänderter Typ", {{"Column11", type number}, {"Column9", type number}}, "en-US")
 
-csv_path = out_base + ".csv"
-df_final.to_csv(csv_path, index=False, sep=";", encoding="utf-8-sig")
 
-print("✅ Saved:")
-print("  • Excel:", xlsx_path)
-print("  • CSV  :", csv_path)
+= Table.RenameColumns(#"Geänderter Typ Zahl aus Englischem Zellenformat CCF",{{"Column1", "BLZ"}, {"Column2", "Rating_od_wNote"}, {"Column3", "Rating_Kategorie"}, {"Column4", "Forderungsklasse"}, {"Column5", "Risikokundengruppe"}})
+
+= Table.DuplicateColumn(#"Umbenannte Spalten", "Rating_od_wNote", "Copy of Rating_od_wNote")
+
+= Table.RenameColumns(#"Hilfsspalte einfuegen",{{"Rating_od_wNote", "Rating_od_wNote_Original"}})
+
+= Table.ReorderColumns(#"Umbenannte Spalten2",{"BLZ", "Rating_od_wNote_Original", "Copy of Rating_od_wNote", "Rating_Kategorie", "Forderungsklasse", "Risikokundengruppe", "Column6", "Column7", "Column8", "Column9", "Column10", "Column11"})
+
+= Table.RenameColumns(#"Neu angeordnete Spalten",{{"Copy of Rating_od_wNote", "Rating_od_wNote_Hilfsspalte"}})
+
+= Table.RemoveColumns(#"Umbenannte Spalten3",{"Column6"})
+
+= Table.ReplaceValue(#"Entfernte Spalten",".",",",Replacer.ReplaceText,{"Rating_od_wNote_Hilfsspalte"})
+
+= Table.AddColumn(#"Punkt Durch Komma in Hilfsspalte", "Rating_od_wNote", each if ([Rating_Kategorie]="10" or [Rating_Kategorie]="11" or [Rating_Kategorie]="12" or [Forderungsklasse] ="1" or [Forderungsklasse] ="2" or [Forderungsklasse] ="3" or [Forderungsklasse] ="4" or [Forderungsklasse] ="5") then [Rating_od_wNote_Hilfsspalte] else [Rating_od_wNote_Original])
+
+= Table.ReorderColumns(#"Bei Ratingkategorie 10 bis 12 Werte aus Hilfsspalte",{"BLZ", "Rating_od_wNote", "Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte", "Rating_Kategorie", "Forderungsklasse", "Risikokundengruppe", "Column7", "Column8", "Column9", "Column10", "Column11"})
+
+= Table.RenameColumns(#"Neue Ratingspalte nach vorne schieben",{{"Column7", "Laufzeit_Von_(in_Tagen)"}, {"Column8", "Laufzeit_Bis_(in_Tagen)"}, {"Column9", "Risikokostensatz_Fix_(in_%)"}, {"Column10", "Risikokostensatz_Variabel_(in_%)"}, {"Column11", "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"}})
+
+
+= Table.ReplaceValue(#"Spalten umbenennen","-2","",Replacer.ReplaceText,{"Risikokundengruppe"})
+
+= Table.SelectRows(#"Ersetzter Wert", each ([Rating_od_wNote] <> "-1,0" and [Rating_od_wNote] <> "-1.0" and [Rating_od_wNote] <> "-2,0" and [Rating_od_wNote] <> "-2.0"))
+
+= Table.RemoveColumns(#"Unnoetige Ratings entfernen",{"Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte"})
+
+= Table.ReorderColumns(#"Hilfsspalten fürs Rating löschen",{"BLZ", "Rating_Kategorie", "Rating_od_wNote", "Forderungsklasse", "Risikokundengruppe", "Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)", "Risikokostensatz_Fix_(in_%)", "Risikokostensatz_Variabel_(in_%)", "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"})
+
+= Table.RemoveColumns(#"Kategorie vor Rating",{"Risikokundengruppe"})
+
+
+= Table.RenameColumns(#"Entfernte Spalten1",{{"Risikokostensatz_Fix_(in_%)", "Eigenkapitalkosten_Fix_(in_%)"}, {"Risikokostensatz_Variabel_(in_%)", "Eigenkapitalkosten_Variabel_(in_%)"}, {"Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)", "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"}})
+
+
+As next step open the file with name EK_Basis_Primaerbanken.csv   in the following directory
+
+U:\ Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken
+Please do the following transformation steps. Please note that in this file in row 1 there are  column names .
+
+
+= Table.PromoteHeaders(Quelle)
+
+
+= Table.SelectRows(#"Erste Zeile als Header", each ([BLZ] = "34"))
+
+
+= Table.TransformColumnTypes(#"Gefilterte Zeilen",{{"Laufzeit_Von_(in_Tagen)", Int64.Type}, {"Laufzeit_Bis_(in_Tagen)", Int64.Type}, {"Eigenkapitalkosten_Fix_(in_%)", type number}, {"Eigenkapitalkosten_Variabel_(in_%)", type number}, {"Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)", type number}, {"BLZ", Int64.Type}})
+
+
+Then as next step, the processed two files , I need to combine and on to the combined file I want to perform following transformations
+
+= Table.SelectRows(Quelle, each ([BLZ] <> 55000))
+
+= Table.ReplaceValue(#"nur 34 und 34000",365,366,Replacer.ReplaceValue,{"Laufzeit_Bis_(in_Tagen)"})
+
+= Table.ReplaceValue(#"365_durch 366 ersetzen",366,367,Replacer.ReplaceValue,{"Laufzeit_Von_(in_Tagen)"})
+
+= Table.SelectRows(#"Ersetzter Wert", each ([Rating_Kategorie] <> "9"))
+
+= Table.DuplicateColumn(#"Ratingkategorie 9 wegfiltern", "Eigenkapitalkosten_Variabel_(in_%)", "Eigenkapitalkosten_Variabel_(in_%) - Kopie")
+
+= Table.RemoveColumns(#"Duplizierte Spalte",{"Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"})
+
+= Table.RenameColumns(#"Entfernte Spalten",{{"Eigenkapitalkosten_Variabel_(in_%) - Kopie", "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"}})
+
+= Table.SelectRows(NaRahmenSatz, each ([Rating_od_wNote] <> "-1" and [Rating_od_wNote] <> "-2"))
+
+
+
+
+
+
+Finally save the file in name    EK_Basis_Final in the following directory
+
+U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk
