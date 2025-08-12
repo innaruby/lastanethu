@@ -1,11 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-EK pipeline — robust to messy CSVs and missing columns.
-- Reads Tab_EM_ICAAP.csv (NO header) with delimiter/encoding sniffing.
-- Reads EK_Basis_Primaerbanken.csv (WITH header).
-- Applies your exact Power Query steps.
-- Saves CSV with ; delimiter and , decimal (Excel DE/AT friendly) + optional XLSX.
-"""
+
 
 import pandas as pd
 from pathlib import Path
