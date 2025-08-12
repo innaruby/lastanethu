@@ -1,89 +1,161 @@
-I need python code for the following power querys. At first open the file whose name is Tab_EM_ICAAP.csv          which is in directory 
+import pandas as pd
+import os
 
+# ----------------------------
+# File paths
+# ----------------------------
+file1_path = r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_EM_ICAAP.csv"
+file2_path = r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\EK_Basis_Primaerbanken.csv"
+output_path = r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\EK_Basis_Final.csv"
 
-U: \Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien
+# ----------------------------
+# Process first file (Tab_EM_ICAAP.csv)
+# ----------------------------
+df1 = pd.read_csv(file1_path, header=None, dtype=str)  # No column names in file
 
-Please do the following transformation steps. Please note that in this file in row 1 there are no column names .so please add some dummy names in rows so that further processing gets smoothy.
+# Assign dummy column names
+df1.columns = [f"Column{i+1}" for i in range(df1.shape[1])]
 
+# Convert types
+df1["Column1"] = pd.to_numeric(df1["Column1"], errors='coerce').astype('Int64')
+df1["Column2"] = df1["Column2"].astype(str)
+df1["Column7"] = pd.to_numeric(df1["Column7"], errors='coerce').astype('Int64')
+df1["Column8"] = pd.to_numeric(df1["Column8"], errors='coerce').astype('Int64')
 
-= Table.TransformColumnTypes(Quelle,{{"Column1", Int64.Type}, {"Column2", type text}, {"Column7", Int64.Type}, {"Column8", Int64.Type}, {"Column9", type text}})
+# Column9 is first text, then number in en-US format
+df1["Column9"] = pd.to_numeric(df1["Column9"], errors='coerce')
+df1["Column11"] = pd.to_numeric(df1["Column11"], errors='coerce')
 
-= Table.TransformColumnTypes(#"Geänderter Typ", {{"Column11", type number}, {"Column9", type number}}, "en-US")
+# Rename columns
+df1 = df1.rename(columns={
+    "Column1": "BLZ",
+    "Column2": "Rating_od_wNote",
+    "Column3": "Rating_Kategorie",
+    "Column4": "Forderungsklasse",
+    "Column5": "Risikokundengruppe"
+})
 
+# Duplicate & rename
+df1["Copy of Rating_od_wNote"] = df1["Rating_od_wNote"]
+df1 = df1.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
 
-= Table.RenameColumns(#"Geänderter Typ Zahl aus Englischem Zellenformat CCF",{{"Column1", "BLZ"}, {"Column2", "Rating_od_wNote"}, {"Column3", "Rating_Kategorie"}, {"Column4", "Forderungsklasse"}, {"Column5", "Risikokundengruppe"}})
+# Reorder columns
+df1 = df1[[
+    "BLZ", "Rating_od_wNote_Original", "Copy of Rating_od_wNote", "Rating_Kategorie",
+    "Forderungsklasse", "Risikokundengruppe", "Column6", "Column7", "Column8",
+    "Column9", "Column10", "Column11"
+]]
 
-= Table.DuplicateColumn(#"Umbenannte Spalten", "Rating_od_wNote", "Copy of Rating_od_wNote")
+# Rename copy column
+df1 = df1.rename(columns={"Copy of Rating_od_wNote": "Rating_od_wNote_Hilfsspalte"})
 
-= Table.RenameColumns(#"Hilfsspalte einfuegen",{{"Rating_od_wNote", "Rating_od_wNote_Original"}})
+# Remove Column6
+df1 = df1.drop(columns=["Column6"])
 
-= Table.ReorderColumns(#"Umbenannte Spalten2",{"BLZ", "Rating_od_wNote_Original", "Copy of Rating_od_wNote", "Rating_Kategorie", "Forderungsklasse", "Risikokundengruppe", "Column6", "Column7", "Column8", "Column9", "Column10", "Column11"})
+# Replace "." with "," in Hilfsspalte
+df1["Rating_od_wNote_Hilfsspalte"] = df1["Rating_od_wNote_Hilfsspalte"].str.replace(".", ",", regex=False)
 
-= Table.RenameColumns(#"Neu angeordnete Spalten",{{"Copy of Rating_od_wNote", "Rating_od_wNote_Hilfsspalte"}})
+# Add new Rating_od_wNote based on conditions
+def choose_rating(row):
+    if row["Rating_Kategorie"] in ["10", "11", "12"] or row["Forderungsklasse"] in ["1", "2", "3", "4", "5"]:
+        return row["Rating_od_wNote_Hilfsspalte"]
+    else:
+        return row["Rating_od_wNote_Original"]
 
-= Table.RemoveColumns(#"Umbenannte Spalten3",{"Column6"})
+df1["Rating_od_wNote"] = df1.apply(choose_rating, axis=1)
 
-= Table.ReplaceValue(#"Entfernte Spalten",".",",",Replacer.ReplaceText,{"Rating_od_wNote_Hilfsspalte"})
+# Reorder again
+df1 = df1[[
+    "BLZ", "Rating_od_wNote", "Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte",
+    "Rating_Kategorie", "Forderungsklasse", "Risikokundengruppe", "Column7",
+    "Column8", "Column9", "Column10", "Column11"
+]]
 
-= Table.AddColumn(#"Punkt Durch Komma in Hilfsspalte", "Rating_od_wNote", each if ([Rating_Kategorie]="10" or [Rating_Kategorie]="11" or [Rating_Kategorie]="12" or [Forderungsklasse] ="1" or [Forderungsklasse] ="2" or [Forderungsklasse] ="3" or [Forderungsklasse] ="4" or [Forderungsklasse] ="5") then [Rating_od_wNote_Hilfsspalte] else [Rating_od_wNote_Original])
+# Rename technical columns
+df1 = df1.rename(columns={
+    "Column7": "Laufzeit_Von_(in_Tagen)",
+    "Column8": "Laufzeit_Bis_(in_Tagen)",
+    "Column9": "Risikokostensatz_Fix_(in_%)",
+    "Column10": "Risikokostensatz_Variabel_(in_%)",
+    "Column11": "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
+})
 
-= Table.ReorderColumns(#"Bei Ratingkategorie 10 bis 12 Werte aus Hilfsspalte",{"BLZ", "Rating_od_wNote", "Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte", "Rating_Kategorie", "Forderungsklasse", "Risikokundengruppe", "Column7", "Column8", "Column9", "Column10", "Column11"})
+# Replace "-2" with ""
+df1["Risikokundengruppe"] = df1["Risikokundengruppe"].replace("-2", "")
 
-= Table.RenameColumns(#"Neue Ratingspalte nach vorne schieben",{{"Column7", "Laufzeit_Von_(in_Tagen)"}, {"Column8", "Laufzeit_Bis_(in_Tagen)"}, {"Column9", "Risikokostensatz_Fix_(in_%)"}, {"Column10", "Risikokostensatz_Variabel_(in_%)"}, {"Column11", "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"}})
+# Filter unwanted ratings
+df1 = df1[~df1["Rating_od_wNote"].isin(["-1,0", "-1.0", "-2,0", "-2.0"])]
 
+# Remove helper columns
+df1 = df1.drop(columns=["Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte"])
 
-= Table.ReplaceValue(#"Spalten umbenennen","-2","",Replacer.ReplaceText,{"Risikokundengruppe"})
+# Final reorder
+df1 = df1[[
+    "BLZ", "Rating_Kategorie", "Rating_od_wNote", "Forderungsklasse", "Risikokundengruppe",
+    "Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)",
+    "Risikokostensatz_Fix_(in_%)", "Risikokostensatz_Variabel_(in_%)",
+    "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
+]]
 
-= Table.SelectRows(#"Ersetzter Wert", each ([Rating_od_wNote] <> "-1,0" and [Rating_od_wNote] <> "-1.0" and [Rating_od_wNote] <> "-2,0" and [Rating_od_wNote] <> "-2.0"))
+# Drop Risikokundengruppe
+df1 = df1.drop(columns=["Risikokundengruppe"])
 
-= Table.RemoveColumns(#"Unnoetige Ratings entfernen",{"Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte"})
+# Rename columns for Eigenkapitalkosten
+df1 = df1.rename(columns={
+    "Risikokostensatz_Fix_(in_%)": "Eigenkapitalkosten_Fix_(in_%)",
+    "Risikokostensatz_Variabel_(in_%)": "Eigenkapitalkosten_Variabel_(in_%)",
+    "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)": "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"
+})
 
-= Table.ReorderColumns(#"Hilfsspalten fürs Rating löschen",{"BLZ", "Rating_Kategorie", "Rating_od_wNote", "Forderungsklasse", "Risikokundengruppe", "Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)", "Risikokostensatz_Fix_(in_%)", "Risikokostensatz_Variabel_(in_%)", "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"})
+# ----------------------------
+# Process second file (EK_Basis_Primaerbanken.csv)
+# ----------------------------
+df2 = pd.read_csv(file2_path, dtype=str)
+df2.columns = df2.columns.str.strip()
 
-= Table.RemoveColumns(#"Kategorie vor Rating",{"Risikokundengruppe"})
+# Filter BLZ = "34"
+df2 = df2[df2["BLZ"] == "34"]
 
+# Convert types
+df2["Laufzeit_Von_(in_Tagen)"] = pd.to_numeric(df2["Laufzeit_Von_(in_Tagen)"], errors='coerce').astype('Int64')
+df2["Laufzeit_Bis_(in_Tagen)"] = pd.to_numeric(df2["Laufzeit_Bis_(in_Tagen)"], errors='coerce').astype('Int64')
+df2["Eigenkapitalkosten_Fix_(in_%)"] = pd.to_numeric(df2["Eigenkapitalkosten_Fix_(in_%)"], errors='coerce')
+df2["Eigenkapitalkosten_Variabel_(in_%)"] = pd.to_numeric(df2["Eigenkapitalkosten_Variabel_(in_%)"], errors='coerce')
+df2["Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"] = pd.to_numeric(df2["Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"], errors='coerce')
+df2["BLZ"] = pd.to_numeric(df2["BLZ"], errors='coerce').astype('Int64')
 
-= Table.RenameColumns(#"Entfernte Spalten1",{{"Risikokostensatz_Fix_(in_%)", "Eigenkapitalkosten_Fix_(in_%)"}, {"Risikokostensatz_Variabel_(in_%)", "Eigenkapitalkosten_Variabel_(in_%)"}, {"Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)", "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"}})
+# ----------------------------
+# Combine both
+# ----------------------------
+df_combined = pd.concat([df1, df2], ignore_index=True)
 
+# Filter BLZ != 55000
+df_combined = df_combined[df_combined["BLZ"] != 55000]
 
-As next step open the file with name EK_Basis_Primaerbanken.csv   in the following directory
+# Replace 365 with 366 in Laufzeit_Bis
+df_combined["Laufzeit_Bis_(in_Tagen)"] = df_combined["Laufzeit_Bis_(in_Tagen)"].replace(365, 366)
 
-U:\ Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken
-Please do the following transformation steps. Please note that in this file in row 1 there are  column names .
+# Replace 366 with 367 in Laufzeit_Von
+df_combined["Laufzeit_Von_(in_Tagen)"] = df_combined["Laufzeit_Von_(in_Tagen)"].replace(366, 367)
 
+# Filter Rating_Kategorie != "9"
+df_combined = df_combined[df_combined["Rating_Kategorie"] != "9"]
 
-= Table.PromoteHeaders(Quelle)
+# Duplicate Eigenkapitalkosten_Variabel
+df_combined["Eigenkapitalkosten_Variabel_(in_%) - Kopie"] = df_combined["Eigenkapitalkosten_Variabel_(in_%)"]
 
+# Remove Eigenkapitalkosten_nicht_ausgenutzter_Rahmen
+df_combined = df_combined.drop(columns=["Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"])
 
-= Table.SelectRows(#"Erste Zeile als Header", each ([BLZ] = "34"))
+# Rename copied column
+df_combined = df_combined.rename(columns={"Eigenkapitalkosten_Variabel_(in_%) - Kopie": "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"})
 
+# Final rating filter
+df_combined = df_combined[~df_combined["Rating_od_wNote"].isin(["-1", "-2"])]
 
-= Table.TransformColumnTypes(#"Gefilterte Zeilen",{{"Laufzeit_Von_(in_Tagen)", Int64.Type}, {"Laufzeit_Bis_(in_Tagen)", Int64.Type}, {"Eigenkapitalkosten_Fix_(in_%)", type number}, {"Eigenkapitalkosten_Variabel_(in_%)", type number}, {"Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)", type number}, {"BLZ", Int64.Type}})
+# ----------------------------
+# Save result
+# ----------------------------
+df_combined.to_csv(output_path, index=False, encoding='utf-8-sig')
 
-
-Then as next step, the processed two files , I need to combine and on to the combined file I want to perform following transformations
-
-= Table.SelectRows(Quelle, each ([BLZ] <> 55000))
-
-= Table.ReplaceValue(#"nur 34 und 34000",365,366,Replacer.ReplaceValue,{"Laufzeit_Bis_(in_Tagen)"})
-
-= Table.ReplaceValue(#"365_durch 366 ersetzen",366,367,Replacer.ReplaceValue,{"Laufzeit_Von_(in_Tagen)"})
-
-= Table.SelectRows(#"Ersetzter Wert", each ([Rating_Kategorie] <> "9"))
-
-= Table.DuplicateColumn(#"Ratingkategorie 9 wegfiltern", "Eigenkapitalkosten_Variabel_(in_%)", "Eigenkapitalkosten_Variabel_(in_%) - Kopie")
-
-= Table.RemoveColumns(#"Duplizierte Spalte",{"Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"})
-
-= Table.RenameColumns(#"Entfernte Spalten",{{"Eigenkapitalkosten_Variabel_(in_%) - Kopie", "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"}})
-
-= Table.SelectRows(NaRahmenSatz, each ([Rating_od_wNote] <> "-1" and [Rating_od_wNote] <> "-2"))
-
-
-
-
-
-
-Finally save the file in name    EK_Basis_Final in the following directory
-
-U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk
+print("Processing completed. File saved to:", output_path)
