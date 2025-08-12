@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -23,25 +24,46 @@ PDF_PREFIX = "Risiko- und Eigenmittelkosten"  # startswith, usually a PDF
 
 TARGET_DIR = r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien"
 
-# -------- Red-text detection (from code 2), parameters --------
-ZOOM = 2.0           # Increase to 3.0 if tiny red text is missed
-RED_THRESHOLD = 160  # Min R value (0–255) to consider red
-DELTA = 40           # R must exceed G and B by at least this much
-MIN_FRACTION = 1e-5  # Min fraction of red pixels to flag a page
-# ---------------------------------------------------------------
+# -------- Red-text detection parameters --------
+ZOOM = 2.0
+RED_THRESHOLD = 160
+DELTA = 40
+MIN_FRACTION = 1e-5
+# ------------------------------------------------
 
 # Shared CSV delimiter options
 DELIMS = [",", ";", "\t", "|"]
 
-# === FILE PATHS for EKBasis (from code 1) ===
+# === FILE PATHS for EKBasis ===
 EKB_FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_EM_ICAAP.csv")  # no header
 EKB_FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\EK_Basis_Primaerbanken.csv")  # has header
 EKB_OUTPUT_CSV = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_EK_Basis.csv")
 
-# === FILE PATHS for RKBasis (from code 2, renamed to avoid clashes) ===
+# === FILE PATHS for RKBasis ===
 RK_FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_Risiko_ICAAP.csv")  # no header
 RK_FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\RK_Basis_Primaerbanken.csv")  # has header
 RK_OUTPUT_CSV  = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_RK_Basis.csv")
+
+# ---- GUI status var (set in create_gui) ----
+status_var = None
+
+
+@contextmanager
+def suppress_messageboxes():
+    """Temporarily disable tkinter.messagebox popups (showinfo/warning/error)."""
+    orig_info = messagebox.showinfo
+    orig_warn = messagebox.showwarning
+    orig_err  = messagebox.showerror
+    def _noop(*args, **kwargs): return None
+    try:
+        messagebox.showinfo = _noop
+        messagebox.showwarning = _noop
+        messagebox.showerror = _noop
+        yield
+    finally:
+        messagebox.showinfo = orig_info
+        messagebox.showwarning = orig_warn
+        messagebox.showerror = orig_err
 
 
 def Emailprocessing():
@@ -250,27 +272,20 @@ def RK_CCF():
     OUTPUT_DIR = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk")
     OUTPUT_PATH = OUTPUT_DIR / "34000_RK_CCF.csv"
 
-    # ---------- helpers ----------
     def read_any(path: Path) -> pd.DataFrame:
-        """Read CSV or Excel. Assume no header in input (like Power Query's Column1..)."""
         if path.suffix.lower() in [".csv", ".txt"]:
-            # Try to detect delimiter; default to comma, fall back to semicolon
             try:
                 df = pd.read_csv(path, header=None, dtype=str, encoding="utf-8", low_memory=False)
             except UnicodeDecodeError:
                 df = pd.read_csv(path, header=None, dtype=str, encoding="latin1", low_memory=False)
-            # If it looks like semicolon-separated (few columns but many semicolons), try again:
             if df.shape[1] == 1 and ";" in str(df.iloc[0, 0]):
                 df = pd.read_csv(path, header=None, dtype=str, sep=";", encoding="utf-8", low_memory=False)
             return df
         else:
-            # Excel
             return pd.read_excel(path, header=None, dtype=str, engine="openpyxl")
 
     def write_same_format(path: Path, df: pd.DataFrame):
-        """Overwrite original file, adding headers."""
         if path.suffix.lower() in [".csv", ".txt"]:
-            # If original looked semicolon-based, preserve that; else default comma
             sep = ";"
             with open(path, "rb") as f:
                 head = f.read(1024)
@@ -289,12 +304,10 @@ def RK_CCF():
         return pd.to_numeric(s, errors="coerce").astype("Int64")
 
     def to_float_from_en_gb(s):
-        """Parse with dot decimal (en-GB style)."""
         if s is None:
             return pd.Series(dtype="float64")
         return pd.to_numeric(s.str.replace(",", ".", regex=False), errors="coerce")
 
-    # ---------- step A: EM_ICAAP files — insert dummy headers ----------
     def fix_em_icaap_headers():
         for p in SOURCE_DIR.iterdir():
             if p.is_file() and "EM_ICAAP" in p.name:
@@ -302,7 +315,6 @@ def RK_CCF():
                 df = ensure_column_names(df, prefix="Column")
                 write_same_format(p, df)
 
-    # ---------- step B: Risiko_ICAAP processing ----------
     def process_risiko_icaap():
         frames = []
         for p in SOURCE_DIR.iterdir():
@@ -789,7 +801,6 @@ def process_eigenmittel_verlustquote():
         messagebox.showerror("Error", str(e))
 
 
-# ---- NEW: RKBasis from code 2, integrated ----
 def RKBasis():
     def read_csv_flexible(path: Path, has_header: bool, prefer_utf8: bool = True) -> pd.DataFrame:
         encs = ["utf-8-sig", "latin-1"] if prefer_utf8 else ["latin-1", "utf-8-sig"]
@@ -971,8 +982,51 @@ def RKBasis():
         messagebox.showerror("Error", str(e))
 
 
+# ---- Run everything in one click, silently (no popups) ----
+def run_full_automation():
+    global status_var
+    if status_var is not None:
+        status_var.set("Running full automation… (see console for logs)")
+        try:
+            # Keep GUI responsive
+            tk._default_root.update_idletasks()
+        except Exception:
+            pass
+
+    steps = [
+        ("Emailprocessing (save attachments)", Emailprocessing),
+        ("Risk Loss Given Default (34000_RK_LGD)", process_csv),
+        ("Eigenmittel Verlustquote (34000_EK_LGD)", process_eigenmittel_verlustquote),
+        ("EK_CCF (34000_EK_CCF.csv)", EK_CCF),
+        ("RK_CCF (34000_RK_CCF.csv)", RK_CCF),
+        ("EK_Basis (34000_EK_Basis.csv)", EKBasis),
+        ("RK_Basis (34000_RK_Basis.csv)", RKBasis),
+    ]
+
+    results = []
+    with suppress_messageboxes():
+        for title, fn in steps:
+            print(f"[START] {title}")
+            try:
+                fn()
+                results.append(f" {title}")
+                print(f"[DONE]  {title}")
+            except Exception as e:
+                results.append(f" {title} -> {e}")
+                print(f"[ERROR] {title}: {e}")
+
+    summary = " | ".join(results)
+    print("\n=== FULL AUTOMATION SUMMARY ===")
+    print(summary)
+    print("===============================\n")
+
+    if status_var is not None:
+        status_var.set("Full automation finished. Check console for detailed summary.")
+
+
 # === GUI ===
 def create_gui():
+    global status_var
     root = tk.Tk()
     root.title("Prozess Vorkalk")
 
@@ -986,6 +1040,12 @@ def create_gui():
     tk.Button(frame, text="Prozess RK_CCF", command=RK_CCF, padx=10, pady=6).pack(pady=6)
     tk.Button(frame, text="Prozess EK_Basis -> 34000_EK_Basis", command=EKBasis, padx=10, pady=6).pack(pady=6)
     tk.Button(frame, text="Prozess RK_Basis -> 34000_RK_Basis", command=RKBasis, padx=10, pady=6).pack(pady=6)
+
+    # NEW: One-click, silent run
+    tk.Button(frame, text="Run Full Automation (silent)", command=run_full_automation, padx=10, pady=8).pack(pady=10)
+
+    status_var = tk.StringVar(value="Ready.")
+    tk.Label(frame, textvariable=status_var).pack(pady=4)
 
     root.mainloop()
 
