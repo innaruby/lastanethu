@@ -1,7 +1,19 @@
-  File "u:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\PythonsckriptTP\EK.py", line 17, in <module>
-    df1["Column2"] = df1["Column2"].astype(str)
-  File "C:\Entwicklung\.conda\envs\MSR-reports\lib\site-packages\pandas\core\frame.py", line 4102, in __getitem__
-    indexer = self.columns.get_loc(key)
-  File "C:\Entwicklung\.conda\envs\MSR-reports\lib\site-packages\pandas\core\indexes\base.py", line 3812, in get_loc
-    raise KeyError(key) from err
-KeyError: 'Column2'
+def read_tab_em(path):
+    # Try automatic delimiter detection
+    try:
+        df = pd.read_csv(path, header=None, sep=None, engine="python", dtype=str)
+    except Exception:
+        df = None
+
+    # If still only 1 column, try semicolon explicitly
+    if df is None or df.shape[1] == 1:
+        df = pd.read_csv(path, header=None, sep=";", dtype=str)
+
+    # If still only 1 column, fall back to comma
+    if df.shape[1] == 1:
+        df = pd.read_csv(path, header=None, sep=",", dtype=str)
+
+    return df
+
+df1 = read_tab_em(path_tab_em)
+df1.columns = [f"Column{i+1}" for i in range(df1.shape[1])]
