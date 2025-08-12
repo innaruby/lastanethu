@@ -1,36 +1,15 @@
 import os
-import pandas as pd
-import tkinter as tk
-from tkinter import messagebox
-
-import os
-from pathlib import Path
-import pandas as pd
-import numpy as np
-import tkinter as tk
-from tkinter import messagebox
-
-import os
-import pandas as pd
-import tkinter as tk
-from tkinter import messagebox
-
-import csv
-from pathlib import Path
-import pandas as pd
-import tkinter as tk
-from tkinter import messagebox
-
-
-import os
 import sys
-import threading
+import csv
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 import tkinter as tk
 from tkinter import messagebox
-import tempfile
-import shutil
 
 # ---- CONFIG ----
 SUBJECT_KEYWORD = "Risiko- und Eigenmittelkostensätze"  # case-insensitive 'contains'
@@ -50,6 +29,20 @@ RED_THRESHOLD = 160  # Min R value (0–255) to consider red
 DELTA = 40           # R must exceed G and B by at least this much
 MIN_FRACTION = 1e-5  # Min fraction of red pixels to flag a page
 # ---------------------------------------------------------------
+
+# Shared CSV delimiter options
+DELIMS = [",", ";", "\t", "|"]
+
+# === FILE PATHS for EKBasis (from code 1) ===
+EKB_FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_EM_ICAAP.csv")  # no header
+EKB_FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\EK_Basis_Primaerbanken.csv")  # has header
+EKB_OUTPUT_CSV = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_EK_Basis.csv")
+
+# === FILE PATHS for RKBasis (from code 2, renamed to avoid clashes) ===
+RK_FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_Risiko_ICAAP.csv")  # no header
+RK_FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\RK_Basis_Primaerbanken.csv")  # has header
+RK_OUTPUT_CSV  = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_RK_Basis.csv")
+
 
 def Emailprocessing():
     def get_outlook_inbox():
@@ -144,7 +137,6 @@ def Emailprocessing():
 
     def pages_with_red(pdf_path, zoom=ZOOM, red_threshold=RED_THRESHOLD, delta=DELTA, min_fraction=MIN_FRACTION):
         import fitz  # PyMuPDF
-        import numpy as np
 
         doc = fitz.open(pdf_path)
         red_pages = []
@@ -172,7 +164,7 @@ def Emailprocessing():
         return red_pages
 
     try:
-        dest = ensure_dir(TARGET_DIR)
+        dest = Path(ensure_dir(TARGET_DIR))
 
         inbox = get_outlook_inbox()
         mail = find_latest_matching_mail(inbox, SUBJECT_KEYWORD)
@@ -269,7 +261,7 @@ def RK_CCF():
                 df = pd.read_csv(path, header=None, dtype=str, encoding="latin1", low_memory=False)
             # If it looks like semicolon-separated (few columns but many semicolons), try again:
             if df.shape[1] == 1 and ";" in str(df.iloc[0, 0]):
-                df = pd.read_csv(path, header=None, dtype=str, sep=";", encoding=df.encoding if hasattr(df, "encoding") else "utf-8", low_memory=False)
+                df = pd.read_csv(path, header=None, dtype=str, sep=";", encoding="utf-8", low_memory=False)
             return df
         else:
             # Excel
@@ -302,23 +294,17 @@ def RK_CCF():
             return pd.Series(dtype="float64")
         return pd.to_numeric(s.str.replace(",", ".", regex=False), errors="coerce")
 
-    def replace_dot_with_comma(series: pd.Series) -> pd.Series:
-        return series.astype(str).str.replace(".", ",", regex=False)
-
     # ---------- step A: EM_ICAAP files — insert dummy headers ----------
     def fix_em_icaap_headers():
         for p in SOURCE_DIR.iterdir():
             if p.is_file() and "EM_ICAAP" in p.name:
                 df = read_any(p)
-                # Insert dummy headers so data starts from row 2
                 df = ensure_column_names(df, prefix="Column")
                 write_same_format(p, df)
 
     # ---------- step B: Risiko_ICAAP processing ----------
     def process_risiko_icaap():
-        # Collect rows from all matching files (if multiple exist)
         frames = []
-
         for p in SOURCE_DIR.iterdir():
             if not (p.is_file() and "Risiko_ICAAP" in p.name):
                 continue
@@ -326,21 +312,16 @@ def RK_CCF():
             df = read_any(p)
             df = ensure_column_names(df, prefix="Column")
 
-            # Ensure we have at least 11 columns referenced in the M-steps
             for i in range(df.shape[1] + 1, 12):
-                df[f"Column{i}"] = np.nan # pad missing
+                df[f"Column{i}"] = np.nan
 
-            # --- TransformColumnTypes ---
-            # Column1,7,8 Int; Column2,9 text; Column10 number (en-GB)
             df["Column1"] = to_int_safe(df["Column1"])
             df["Column7"] = to_int_safe(df["Column7"])
             df["Column8"] = to_int_safe(df["Column8"])
-            # Column10 as number with dot decimal
+
             col10_num = to_float_from_en_gb(df["Column10"].astype(str))
-            # Keep original strings too because later we rename it to "Risikokostensatz_Variabel_(in_%)"
             df["Column10"] = col10_num
 
-            # --- RenameColumns ---
             rename_map = {
                 "Column1": "BLZ",
                 "Column2": "Rating_od_wNote",
@@ -350,31 +331,24 @@ def RK_CCF():
             }
             df = df.rename(columns=rename_map)
 
-            # --- Duplicate & rename helpers ---
             df["Copy of Rating_od_wNote"] = df["Rating_od_wNote"]
             df = df.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
 
-            # Reorder to have helpers similar to PQ step
             reorder_cols = [
                 "BLZ", "Rating_od_wNote_Original", "Copy of Rating_od_wNote",
                 "Rating_Kategorie", "Forderungsklasse", "Risikokundengruppe",
                 "Column6", "Column7", "Column8", "Column9", "Column10", "Column11"
             ]
-            # Keep any extra columns at the end
             existing = [c for c in reorder_cols if c in df.columns]
             others = [c for c in df.columns if c not in existing]
             df = df[existing + others]
 
-            # Rename the duplicate to Hilfsspalte and drop Column6
             df = df.rename(columns={"Copy of Rating_od_wNote": "Rating_od_wNote_Hilfsspalte"})
             if "Column6" in df.columns:
                 df = df.drop(columns=["Column6"])
 
-            # Replace "." -> "," in Hilfsspalte
             df["Rating_od_wNote_Hilfsspalte"] = df["Rating_od_wNote_Hilfsspalte"].astype(str).str.replace(".", ",", regex=False)
 
-            # Add final 'Rating_od_wNote' per condition:
-            # if Rating_Kategorie in {10,11,12} OR Forderungsklasse in {1..5} -> use Hilfsspalte else Original
             def use_hilf_or_orig(row):
                 rk = str(row.get("Rating_Kategorie", ""))
                 fk = str(row.get("Forderungsklasse", ""))
@@ -383,7 +357,6 @@ def RK_CCF():
 
             df["Rating_od_wNote"] = df.apply(use_hilf_or_orig, axis=1)
 
-            # Rename remaining columns 7..11 to their names
             rename_7_11 = {
                 "Column7": "Laufzeit_Von_(in_Tagen)",
                 "Column8": "Laufzeit_Bis_(in_Tagen)",
@@ -393,17 +366,13 @@ def RK_CCF():
             }
             df = df.rename(columns=rename_7_11)
 
-            # Replace "-2" with "" in Risikokundengruppe
             if "Risikokundengruppe" in df.columns:
                 df["Risikokundengruppe"] = df["Risikokundengruppe"].astype(str).replace({"-2": ""})
 
-            # Filter out rows where Rating_od_wNote is '-1,0'/'-1.0'/'-2,0'/'-2.0'
             bad_notes = {"-1,0", "-1.0", "-2,0", "-2.0"}
             df = df[~df["Rating_od_wNote"].astype(str).isin(bad_notes)]
-            # Remove helper columns
             df = df.drop(columns=[c for c in ["Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte"] if c in df.columns])
 
-            # Reorder to 10 columns (if present)
             target_order = [
                 "BLZ", "Rating_Kategorie", "Rating_od_wNote", "Forderungsklasse",
                 "Risikokundengruppe", "Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)",
@@ -414,7 +383,6 @@ def RK_CCF():
             others = [c for c in df.columns if c not in existing]
             df = df[existing + others]
 
-            # Remove columns (keep only those needed for CCF)
             drop_cols = [
                 "Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)",
                 "Risikokundengruppe", "Risikokostensatz_Fix_(in_%)",
@@ -422,50 +390,37 @@ def RK_CCF():
             ]
             df = df.drop(columns=[c for c in drop_cols if c in df.columns])
 
-            # Rename to Faktor_CCF
             df = df.rename(columns={"Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)": "Faktor_CCF"})
 
-            # Keep rows where Faktor_CCF not 0 / "0"
-            # Convert to numeric for filtering (accept both comma and dot decimals)
             fc_num = pd.to_numeric(df["Faktor_CCF"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
             df = df[~(fc_num.fillna(0) == 0)]
 
-            # Drop duplicates
             df = df.drop_duplicates()
 
-            # Keep only BLZ == 34000 and Rating_od_wNote not '-1'/'-2'
             df = df[(df["BLZ"].astype("Int64") == 34000)]
             df = df[~df["Rating_od_wNote"].astype(str).isin({"-1", "-2"})]
 
-            # Replace "." -> "," in Faktor_CCF for output formatting, then also keep numeric for possible re-use
             df["Faktor_CCF"] = df["Faktor_CCF"].astype(str).str.replace(".", ",", regex=False)
 
-            # Add Gueltig_Ab empty string
             df["Gueltig_Ab"] = ""
 
-            # Final reorder
             final_order = ["BLZ", "Gueltig_Ab", "Rating_Kategorie", "Rating_od_wNote", "Forderungsklasse", "Faktor_CCF"]
             existing = [c for c in final_order if c in df.columns]
-            others = [c for c in df.columns if c not in existing]
-            df = df[existing + others]
+            df = df[existing]
 
-            frames.append(df[existing]) # keep just the required output cols
+            frames.append(df)
 
         if not frames:
             raise FileNotFoundError(f"No files containing 'Risiko_ICAAP' were found in {SOURCE_DIR}")
 
-        # If multiple inputs, concatenate and re-deduplicate before save
         out = pd.concat(frames, ignore_index=True).drop_duplicates()
 
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        # Save as CSV with semicolon (common in DE) and no index
         out.to_csv(OUTPUT_PATH, index=False, sep=";", encoding="utf-8")
 
     fix_em_icaap_headers()
     process_risiko_icaap()
     print(f"Done. Wrote: {OUTPUT_PATH}")
-
-
 
 
 def EK_CCF():
@@ -601,19 +556,6 @@ def EK_CCF():
     print(f"Columns ({len(df.columns)}): {list(df.columns)}")
 
 
-import pandas as pd
-from pathlib import Path
-import tkinter as tk
-from tkinter import messagebox
-
-# === FILE PATHS ===
-FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_EM_ICAAP.csv")  # no header
-FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\EK_Basis_Primaerbanken.csv")  # has header
-OUTPUT_CSV = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_EK_Basis.csv")
-#OUTPUT_XLSX = OUTPUT_CSV.with_suffix(".xlsx")
-
-DELIMS = [",", ";", "\t", "|"]
-
 def EKBasis():
     def read_csv_flexible(path: Path, has_header: bool, prefer_utf8: bool = True) -> pd.DataFrame:
         encs = ["utf-8-sig", "latin-1"] if prefer_utf8 else ["latin-1", "utf-8-sig"]
@@ -621,33 +563,19 @@ def EKBasis():
         last_err = None
 
         for enc in encs:
-            # Auto-detect separator
             try:
                 df = pd.read_csv(
-                    path,
-                    header=header,
-                    sep=None,
-                    engine="python",
-                    encoding=enc,
-                    on_bad_lines="skip",
-                    skipinitialspace=True,
-                    na_filter=False,
+                    path, header=header, sep=None, engine="python",
+                    encoding=enc, on_bad_lines="skip", skipinitialspace=True, na_filter=False,
                 )
                 return df
             except Exception as e:
                 last_err = e
-            # Try fixed delimiters
             for sep in DELIMS:
                 try:
                     df = pd.read_csv(
-                        path,
-                        header=header,
-                        sep=sep,
-                        engine="python",
-                        encoding=enc,
-                        on_bad_lines="skip",
-                        skipinitialspace=True,
-                        na_filter=False,
+                        path, header=header, sep=sep, engine="python",
+                        encoding=enc, on_bad_lines="skip", skipinitialspace=True, na_filter=False,
                     )
                     return df
                 except Exception as e:
@@ -662,10 +590,8 @@ def EKBasis():
 
     def read_tab_em_icaap(file1: Path) -> pd.DataFrame:
         df = read_csv_flexible(file1, has_header=False)
-        # Assign dummy column names
         df.columns = [f"Column{i+1}" for i in range(df.shape[1])]
 
-        # Transform column types
         for col in ["Column1", "Column7", "Column8"]:
             if col in df: df[col] = to_int64(df[col])
         for col in ["Column2", "Column9"]:
@@ -673,7 +599,6 @@ def EKBasis():
         if "Column11" in df: df["Column11"] = pd.to_numeric(df["Column11"], errors="coerce")
         if "Column9" in df: df["Column9"] = pd.to_numeric(df["Column9"], errors="coerce")
 
-        # Rename columns
         df = df.rename(columns={
             "Column1": "BLZ",
             "Column2": "Rating_od_wNote",
@@ -682,7 +607,6 @@ def EKBasis():
             "Column5": "Risikokundengruppe"
         })
 
-        # Duplicate column and rename
         df["Copy of Rating_od_wNote"] = df["Rating_od_wNote"]
         df = df.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
 
@@ -697,7 +621,6 @@ def EKBasis():
         if "Rating_od_wNote_Hilfsspalte" in df:
             df["Rating_od_wNote_Hilfsspalte"] = df["Rating_od_wNote_Hilfsspalte"].astype(str).str.replace(".", ",", regex=False)
 
-        # Compute Rating_od_wNote
         def compute_rating(row):
             rk = str(row.get("Rating_Kategorie", ""))
             fk = str(row.get("Forderungsklasse", ""))
@@ -706,7 +629,6 @@ def EKBasis():
             return row.get("Rating_od_wNote_Original", "")
         df["Rating_od_wNote"] = df.apply(compute_rating, axis=1)
 
-        # Reorder and rename remaining columns
         reorder2 = [
             "BLZ","Rating_od_wNote","Rating_od_wNote_Original","Rating_od_wNote_Hilfsspalte","Rating_Kategorie","Forderungsklasse",
             "Risikokundengruppe","Column7","Column8","Column9","Column10","Column11"
@@ -720,23 +642,19 @@ def EKBasis():
             "Column11": "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
         })
 
-        # Replace values & filter
         if "Risikokundengruppe" in df:
             df["Risikokundengruppe"] = df["Risikokundengruppe"].astype(str).str.replace("-2", "", regex=False)
         df = df[~df["Rating_od_wNote"].astype(str).isin({"-1,0","-1.0","-2,0","-2.0"})]
 
-        # Drop unnecessary
         df = df.drop(columns=["Rating_od_wNote_Original","Rating_od_wNote_Hilfsspalte"], errors="ignore")
         df = df.drop(columns=["Risikokundengruppe"], errors="ignore")
 
-        # Rename cost columns
         df = df.rename(columns={
             "Risikokostensatz_Fix_(in_%)": "Eigenkapitalkosten_Fix_(in_%)",
             "Risikokostensatz_Variabel_(in_%)": "Eigenkapitalkosten_Variabel_(in_%)",
             "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)": "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"
         })
 
-        # Ensure types
         for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
             if col in df: df[col] = to_int64(df[col])
         for col in ["Eigenkapitalkosten_Fix_(in_%)","Eigenkapitalkosten_Variabel_(in_%)","Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"]:
@@ -767,7 +685,6 @@ def EKBasis():
         if "Rating_Kategorie" in df:
             df = df[df["Rating_Kategorie"].astype(str) != "9"]
 
-        # Duplicate & adjust cost columns
         if "Eigenkapitalkosten_Variabel_(in_%)" in df:
             df["Eigenkapitalkosten_Variabel_(in_%) - Kopie"] = df["Eigenkapitalkosten_Variabel_(in_%)"]
         df = df.drop(columns=["Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"], errors="ignore")
@@ -780,26 +697,21 @@ def EKBasis():
         return df
 
     try:
-        df1 = read_tab_em_icaap(FILE1_PATH)
-        df2 = read_ek_basis_primaerbanken(FILE2_PATH)
+        df1 = read_tab_em_icaap(EKB_FILE1_PATH)
+        df2 = read_ek_basis_primaerbanken(EKB_FILE2_PATH)
         df_final = combine_and_finalize(df1, df2)
 
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        df_final.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig", sep=";", decimal=",")
-        #try:
-            #df_final.to_excel(OUTPUT_XLSX, index=False)
-        #except Exception:
-            #pass
-        #messagebox.showinfo("Success", f"Saved CSV: {OUTPUT_CSV}\nSaved XLSX: {OUTPUT_XLSX}")
+        EKB_OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+        df_final.to_csv(EKB_OUTPUT_CSV, index=False, encoding="utf-8-sig", sep=";", decimal=",")
     except Exception as e:
         messagebox.showerror("Error", str(e))
- 
+
+
 def process_csv():
     input_dir = r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien"
     output_dir = r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk"
 
     try:
-        # Find the file containing the keyword "RisikoVerlustquote"
         for file_name in os.listdir(input_dir):
             if "RisikoVerlustquote" in file_name:
                 file_path = os.path.join(input_dir, file_name)
@@ -808,13 +720,10 @@ def process_csv():
             messagebox.showerror("Error", "File with keyword 'RisikoVerlustquote' not found.")
             return
 
-        # Define the column names explicitly since the file has no headers
         column_names = ["Column1", "Column2", "Column3", "Column4", "Column5"]
 
-        # Load the CSV file into a DataFrame
         df = pd.read_csv(file_path, delimiter=';', decimal=',', header=None, names=column_names)
 
-        # Rename columns
         df = df.rename(columns={
             "Column5": "LGD",
             "Column4": "Forderungsklasse",
@@ -823,28 +732,15 @@ def process_csv():
             "Column3": "Rating_Kategorie"
         })
 
-        # Ensure that BLZ column is treated as string for accurate filtering
         df['BLZ'] = df['BLZ'].astype(str)
-
-        # Select rows where BLZ equals "34000"
         df_filtered = df[df["BLZ"] == "34000"]
 
-        # Reorder columns
         df_filtered = df_filtered[["BLZ", "Rating_Kategorie", "Sachkontonummer", "Forderungsklasse", "LGD"]]
-
-        # Replace dots with commas in the "LGD" column
         df_filtered["LGD"] = df_filtered["LGD"].astype(str).str.replace('.', ',', regex=False)
-
-        # Convert the "LGD" column to numeric type (if needed)
         df_filtered["LGD"] = pd.to_numeric(df_filtered["LGD"].str.replace(',', '.'), errors='coerce')
-
-        # Add a new column "Gueltig_Ab" with empty strings
         df_filtered["Gueltig_Ab"] = ""
-
-        # Reorder columns again to include the new column
         df_filtered = df_filtered[["BLZ", "Gueltig_Ab", "Rating_Kategorie", "Sachkontonummer", "Forderungsklasse", "LGD"]]
 
-        # Save the DataFrame to a new CSV file
         output_file_path = os.path.join(output_dir, "34000_RK_LGD.csv")
         df_filtered.to_csv(output_file_path, index=False, sep=';', decimal=',', encoding='utf-8')
 
@@ -852,12 +748,12 @@ def process_csv():
     except Exception as e:
         messagebox.showerror("Error", str(e))
 
+
 def process_eigenmittel_verlustquote():
     input_dir = r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien"
     output_dir = r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk"
 
     try:
-        # Find the file containing the keyword "EigenmittelVerlustquote"
         for file_name in os.listdir(input_dir):
             if "EigenmittelVerlustquote" in file_name:
                 file_path = os.path.join(input_dir, file_name)
@@ -866,13 +762,9 @@ def process_eigenmittel_verlustquote():
             messagebox.showerror("Error", "File with keyword 'EigenmittelVerlustquote' not found.")
             return
 
-        # Define the column names explicitly since the file has no headers
         column_names = ["Column1", "Column2", "Column3", "Column4", "Column5"]
-
-        # Load the CSV file into a DataFrame
         df = pd.read_csv(file_path, delimiter=';', decimal=',', header=None, names=column_names)
 
-        # Rename columns
         df = df.rename(columns={
             "Column5": "LGD",
             "Column4": "Forderungsklasse",
@@ -881,76 +773,23 @@ def process_eigenmittel_verlustquote():
             "Column3": "Rating_Kategorie"
         })
 
-        # Ensure that BLZ column is treated as string for accurate filtering
         df['BLZ'] = df['BLZ'].astype(str)
-
-        # Select rows where BLZ equals "34000"
         df_filtered = df[df["BLZ"] == "34000"]
-
-        # Reorder columns
         df_filtered = df_filtered[["BLZ", "Rating_Kategorie", "Sachkontonummer", "Forderungsklasse", "LGD"]]
-
-        # Add a new column "Gueltig_Ab" with empty strings
         df_filtered["Gueltig_Ab"] = ""
-
-        # Reorder columns again to include the new column
         df_filtered = df_filtered[["BLZ", "Gueltig_Ab", "Rating_Kategorie", "Sachkontonummer", "Forderungsklasse", "LGD"]]
-
-        # Replace dots with commas in the "LGD" column
         df_filtered["LGD"] = df_filtered["LGD"].astype(str).str.replace('.', ',', regex=False)
-
-        # Convert the "LGD" column to numeric type (if needed)
         df_filtered["LGD"] = pd.to_numeric(df_filtered["LGD"].str.replace(',', '.'), errors='coerce')
 
-        # Save the DataFrame to a new CSV file
         output_file_path = os.path.join(output_dir, "34000_EK_LGD.csv")
         df_filtered.to_csv(output_file_path, index=False, sep=';', decimal=',', encoding='utf-8')
 
         messagebox.showinfo("Success", f"File saved as {output_file_path}")
     except Exception as e:
         messagebox.showerror("Error", str(e))
-def create_gui():
-    # Create the main window
-    root = tk.Tk()
-    root.title("Prozess Vorkalk")
-    
-    process_button = tk.Button(root, text="Datei hinspeichern", command=Emailprocessing)
-    process_button.pack(pady=20)
-    # Create a button and link it to the process_csv function
-    process_button = tk.Button(root, text="Process RisikoVerlustquote", command=process_csv)
-    process_button.pack(pady=20)
 
-    process_button = tk.Button(root, text="Process EigenmittelVerlustquote", command=process_eigenmittel_verlustquote)
-    process_button.pack(pady=20)
-    
-    process_button = tk.Button(root, text="Process 34000_EK_CCF", command=EK_CCF)
-    process_button.pack(pady=20)
-    
-    process_button = tk.Button(root, text="Prozess RK_CCF", command=RK_CCF)
-    process_button.pack(pady=20)
-    
-  
-    process_button = tk.Button(root, text="Prozess EK_Basis", command=EKBasis)
-    process_button.pack(pady=20)
-    
-    
-    
-    # Run the GUI main loop
-    root.mainloop()
 
-THIS IS CODE 1. and the following code is code 2. I want to add code 2 to code 1 without any problem. import pandas as pd
-from pathlib import Path
-import tkinter as tk
-from tkinter import messagebox
-
-# === FILE PATHS ===
-FILE1_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_Risiko_ICAAP.csv")  # no header
-FILE2_PATH = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\RK_Basis_Primaerbanken.csv")  # has header
-OUTPUT_CSV  = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_RK_Basis.csv")
-#OUTPUT_XLSX = Path(r"U:\rlbnas1_rlb_bw_firw_z\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk\34000_RK_Basis.xlsx")  # optional
-
-DELIMS = [",", ";", "\t", "|"]
-
+# ---- NEW: RKBasis from code 2, integrated ----
 def RKBasis():
     def read_csv_flexible(path: Path, has_header: bool, prefer_utf8: bool = True) -> pd.DataFrame:
         encs = ["utf-8-sig", "latin-1"] if prefer_utf8 else ["latin-1", "utf-8-sig"]
@@ -958,33 +797,19 @@ def RKBasis():
         last_err = None
 
         for enc in encs:
-            # Auto-detect separator
             try:
                 df = pd.read_csv(
-                    path,
-                    header=header,
-                    sep=None,
-                    engine="python",
-                    encoding=enc,
-                    on_bad_lines="skip",
-                    skipinitialspace=True,
-                    na_filter=False,
+                    path, header=header, sep=None, engine="python",
+                    encoding=enc, on_bad_lines="skip", skipinitialspace=True, na_filter=False,
                 )
                 return df
             except Exception as e:
                 last_err = e
-            # Try fixed delimiters
             for sep in DELIMS:
                 try:
                     df = pd.read_csv(
-                        path,
-                        header=header,
-                        sep=sep,
-                        engine="python",
-                        encoding=enc,
-                        on_bad_lines="skip",
-                        skipinitialspace=True,
-                        na_filter=False,
+                        path, header=header, sep=sep, engine="python",
+                        encoding=enc, on_bad_lines="skip", skipinitialspace=True, na_filter=False,
                     )
                     return df
                 except Exception as e:
@@ -1136,36 +961,34 @@ def RKBasis():
         return df
 
     try:
-        df1 = read_tab_risiko_icaap(FILE1_PATH)
-        df2 = read_rk_basis_primaerbanken(FILE2_PATH)
+        df1 = read_tab_risiko_icaap(RK_FILE1_PATH)
+        df2 = read_rk_basis_primaerbanken(RK_FILE2_PATH)
         df_final = combine_and_finalize(df1, df2)
 
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-
-        df_final.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig", sep=";", decimal=",")
-
-        #try:
-         #   df_final.to_excel(OUTPUT_XLSX, index=False)
-        #except Exception:
-         #   pass
-
-        #messagebox.showinfo("Success", f"Saved CSV: {OUTPUT_CSV}\nSaved XLSX: {OUTPUT_XLSX}")
+        RK_OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+        df_final.to_csv(RK_OUTPUT_CSV, index=False, encoding="utf-8-sig", sep=";", decimal=",")
     except Exception as e:
         messagebox.showerror("Error", str(e))
 
-# === GUI SETUP ===
+
+# === GUI ===
 def create_gui():
     root = tk.Tk()
-    root.title("RK Basis Generator")
+    root.title("Prozess Vorkalk")
 
     frame = tk.Frame(root, padx=20, pady=20)
     frame.pack(padx=10, pady=10)
 
-    button = tk.Button(frame, text="Generate RK Basis", command=RKBasis, padx=10, pady=10)
-    button.pack()
+    tk.Button(frame, text="Datei hinspeichern (Email)", command=Emailprocessing, padx=10, pady=6).pack(pady=6)
+    tk.Button(frame, text="Process RisikoVerlustquote -> 34000_RK_LGD", command=process_csv, padx=10, pady=6).pack(pady=6)
+    tk.Button(frame, text="Process EigenmittelVerlustquote -> 34000_EK_LGD", command=process_eigenmittel_verlustquote, padx=10, pady=6).pack(pady=6)
+    tk.Button(frame, text="Process 34000_EK_CCF", command=EK_CCF, padx=10, pady=6).pack(pady=6)
+    tk.Button(frame, text="Prozess RK_CCF", command=RK_CCF, padx=10, pady=6).pack(pady=6)
+    tk.Button(frame, text="Prozess EK_Basis -> 34000_EK_Basis", command=EKBasis, padx=10, pady=6).pack(pady=6)
+    tk.Button(frame, text="Prozess RK_Basis -> 34000_RK_Basis", command=RKBasis, padx=10, pady=6).pack(pady=6)
 
     root.mainloop()
 
-create_gui()
-# Run the GUI
-create_gui()
+
+if __name__ == "__main__":
+    create_gui()
