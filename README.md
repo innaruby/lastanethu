@@ -1,228 +1,303 @@
 # -*- coding: utf-8 -*-
 """
-Replicates the specified Power Query transformations, robust to messy CSVs, and
-saves output in an Excel-friendly format (CSV with ; delimiter and , decimal).
-"""
 
-import pandas as pd
+
 from pathlib import Path
+import pandas as pd
 
-# ----------------------- EDIT THESE -----------------------
-FILE1_PATH = Path(r"U:\...\Originaldateien\Tab_Risiko_ICAAP.csv")  # NO header
-FILE2_PATH = Path(r"U:\...\Originaldateien\Primär-bzw Raiffeisenbanken\RK_Basis_Primaerbanken.csv")  # WITH header
-OUTPUT_CSV  = Path(r"U:\...\Upload_Dateien_Vorkalk\RK_Basis_Final.csv")
-OUTPUT_XLSX = Path(r"U:\...\Upload_Dateien_Vorkalk\RK_Basis_Final.xlsx")  # optional
-# ----------------------------------------------------------
 
-DELIMS = [",", ";", "\t", "|"]
 
-def read_csv_flexible(path: Path, has_header: bool, prefer_utf8: bool = True) -> pd.DataFrame:
-    """
-    Try encodings and delimiters to read messy CSVs robustly.
-    """
-    encs = ["utf-8-sig", "latin-1"] if prefer_utf8 else ["latin-1", "utf-8-sig"]
-    header = 0 if has_header else None
-    last_err = None
+PATH_TAB_EM_ICAAP = Path(
+    r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Tab_EM_ICAAP.csv"
+)
+PATH_EK_BASIS_PRIM = Path(
+    r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Originaldateien\Primär-bzw Raiffeisenbanken\EK_Basis_Primaerbanken.csv"
+)
+OUTPUT_DIR = Path(
+    r"U:\Controlling\FC\07 EDV-Projekte\SMART Vorkalk\Wartungstabellen\Befüllte Wartungstabellen (ECHTDATEN)\IMPORTASSISTENT_fuer_RK_und_EK\Upload_Dateien_Vorkalk"
+)
+OUTPUT_FILE = OUTPUT_DIR / "EK_Basis_Final.csv"
 
-    for enc in encs:
-        # First try automatic sep detection
-        try:
-            df = pd.read_csv(
-                path,
-                header=header,
-                sep=None,            # let parser detect
-                engine="python",
-                encoding=enc,
-                on_bad_lines="skip", # or "warn" to inspect issues
-                skipinitialspace=True,
-                na_filter=False,
-            )
-            return df
-        except Exception as e:
-            last_err = e
-        # Then try known delimiters
-        for sep in DELIMS:
-            try:
-                df = pd.read_csv(
-                    path,
-                    header=header,
-                    sep=sep,
-                    engine="python",
-                    encoding=enc,
-                    on_bad_lines="skip",
-                    skipinitialspace=True,
-                    na_filter=False,
-                )
-                return df
-            except Exception as e:
-                last_err = e
 
-    raise RuntimeError(f"Could not read {path}: {last_err}")
+def process_tab_em_icaap(path_tab: Path) -> pd.DataFrame:
+    """Replicates the Power Query steps for Tab_EM_ICAAP.csv (no headers)."""
 
-def to_int64(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(s, errors="coerce").astype("Int64")
-
-def to_float_from_maybe_comma(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(s.astype(str).str.replace(",", ".", regex=False), errors="coerce")
-
-def read_tab_risiko_icaap(file1: Path) -> pd.DataFrame:
-    df = read_csv_flexible(file1, has_header=False)
+    # Read with no headers -> create dummy Column1..ColumnN
+    df = pd.read_csv(path_tab, header=None, dtype=str, encoding="utf-8", engine="python")
     df.columns = [f"Column{i+1}" for i in range(df.shape[1])]
 
+    # Table.TransformColumnTypes(Quelle, {Column1:int, Column2:text, Column7:int, Column8:int, Column9:text})
+    # We keep everything as str for safety, then coerce needed columns.
     for col in ["Column1", "Column7", "Column8"]:
-        if col in df: df[col] = to_int64(df[col])
-    for col in ["Column2", "Column9"]:
-        if col in df: df[col] = df[col].astype(str)
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    if "Column11" in df: df["Column11"] = pd.to_numeric(df["Column11"], errors="coerce")
-    if "Column9"  in df: df["Column9"]  = pd.to_numeric(df["Column9"],  errors="coerce")
+    if "Column2" in df.columns:
+        df["Column2"] = df["Column2"].astype(str)
 
-    df = df.rename(columns={
+    # Column9 initially treated as text in first step; second step converts Column11, Column9 to number (en-US)
+    # -> Make sure '.' as decimal separator works.
+    for col in ["Column11", "Column9"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Rename columns
+    rename_map = {
         "Column1": "BLZ",
         "Column2": "Rating_od_wNote",
         "Column3": "Rating_Kategorie",
         "Column4": "Forderungsklasse",
         "Column5": "Risikokundengruppe",
-    })
+    }
+    df = df.rename(columns=rename_map)
 
-    if "Rating_od_wNote" in df:
+    # Duplicate & rename to create Original/Hilfsspalte
+    if "Rating_od_wNote" in df.columns:
         df["Copy of Rating_od_wNote"] = df["Rating_od_wNote"]
-    df = df.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
+        df = df.rename(columns={"Rating_od_wNote": "Rating_od_wNote_Original"})
 
-    reorder_1 = [
-        "BLZ","Rating_od_wNote_Original","Copy of Rating_od_wNote","Rating_Kategorie",
-        "Forderungsklasse","Risikokundengruppe","Column6","Column7","Column8","Column9","Column10","Column11"
+    # Reorder to match PQ step (tolerant if some columns are missing)
+    order_cols = [
+        "BLZ",
+        "Rating_od_wNote_Original",
+        "Copy of Rating_od_wNote",
+        "Rating_Kategorie",
+        "Forderungsklasse",
+        "Risikokundengruppe",
+        "Column6",
+        "Column7",
+        "Column8",
+        "Column9",
+        "Column10",
+        "Column11",
     ]
-    cols_existing = [c for c in reorder_1 if c in df.columns]
-    df = df[cols_existing + [c for c in df.columns if c not in cols_existing]]
+    df = df.reindex(columns=[c for c in order_cols if c in df.columns])
+
+    # Rename duplicated to Hilfsspalte
     df = df.rename(columns={"Copy of Rating_od_wNote": "Rating_od_wNote_Hilfsspalte"})
 
-    if "Column6" in df: df = df.drop(columns=["Column6"])
+    # Remove Column6 if exists
+    if "Column6" in df.columns:
+        df = df.drop(columns=["Column6"])
 
-    if "Rating_od_wNote_Hilfsspalte" in df:
-        df["Rating_od_wNote_Hilfsspalte"] = df["Rating_od_wNote_Hilfsspalte"].astype(str).str.replace(".", ",", regex=False)
+    # Replace "." -> "," in Hilfsspalte (string operation)
+    if "Rating_od_wNote_Hilfsspalte" in df.columns:
+        df["Rating_od_wNote_Hilfsspalte"] = (
+            df["Rating_od_wNote_Hilfsspalte"].astype(str).str.replace(".", ",", regex=False)
+        )
 
-    def compute_rating(row):
+    # Add new Rating_od_wNote based on conditions
+    def choose_rating(row):
         rk = str(row.get("Rating_Kategorie", ""))
         fk = str(row.get("Forderungsklasse", ""))
-        if rk in {"10","11","12"} or fk in {"1","2","3","4","5"}:
-            return row.get("Rating_od_wNote_Hilfsspalte", "")
-        return row.get("Rating_od_wNote_Original", "")
+        if rk in {"10", "11", "12"} or fk in {"1", "2", "3", "4", "5"}:
+            return row.get("Rating_od_wNote_Hilfsspalte")
+        return row.get("Rating_od_wNote_Original")
 
-    df["Rating_od_wNote"] = df.apply(compute_rating, axis=1)
+    df["Rating_od_wNote"] = df.apply(choose_rating, axis=1)
 
-    reorder_2 = [
-        "BLZ","Rating_od_wNote","Rating_od_wNote_Original","Rating_od_wNote_Hilfsspalte",
-        "Rating_Kategorie","Forderungsklasse","Risikokundengruppe","Column7","Column8","Column9","Column10","Column11"
+    # Reorder again
+    order_cols2 = [
+        "BLZ",
+        "Rating_od_wNote",
+        "Rating_od_wNote_Original",
+        "Rating_od_wNote_Hilfsspalte",
+        "Rating_Kategorie",
+        "Forderungsklasse",
+        "Risikokundengruppe",
+        "Column7",
+        "Column8",
+        "Column9",
+        "Column10",
+        "Column11",
     ]
-    cols_existing = [c for c in reorder_2 if c in df.columns]
-    df = df[cols_existing + [c for c in df.columns if c not in cols_existing]]
+    df = df.reindex(columns=[c for c in order_cols2 if c in df.columns])
 
-    df = df.rename(columns={
+    # Rename Column7..11
+    rename_costs = {
         "Column7": "Laufzeit_Von_(in_Tagen)",
         "Column8": "Laufzeit_Bis_(in_Tagen)",
         "Column9": "Risikokostensatz_Fix_(in_%)",
-        "Column10":"Risikokostensatz_Variabel_(in_%)",
-        "Column11":"Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)",
-    })
+        "Column10": "Risikokostensatz_Variabel_(in_%)",
+        "Column11": "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)",
+    }
+    df = df.rename(columns=rename_costs)
 
-    if "Risikokundengruppe" in df:
+    # Replace "-2" -> "" in Risikokundengruppe
+    if "Risikokundengruppe" in df.columns:
         df["Risikokundengruppe"] = df["Risikokundengruppe"].astype(str).str.replace("-2", "", regex=False)
 
-    if "Rating_od_wNote" in df:
-        df = df[~df["Rating_od_wNote"].astype(str).isin({"-1,0","-1.0","-2,0","-2.0"})]
-
-    df = df.drop(columns=[c for c in ["Rating_od_wNote_Original","Rating_od_wNote_Hilfsspalte"] if c in df.columns])
-
-    final_order = [
-        "BLZ","Rating_Kategorie","Rating_od_wNote","Forderungsklasse","Risikokundengruppe",
-        "Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)",
-        "Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
-    ]
-    df = df[[c for c in final_order if c in df.columns]]
-
-    for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
-        if col in df: df[col] = to_int64(df[col])
-    for col in ["Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"]:
-        if col in df: df[col] = to_float_from_maybe_comma(df[col])
-
-    return df
-
-def read_rk_basis_primaerbanken(file2: Path) -> pd.DataFrame:
-    df = read_csv_flexible(file2, has_header=True)
-
-    if "BLZ" not in df.columns:
-        raise ValueError("Expected column 'BLZ' not found in RK_Basis_Primaerbanken.csv")
-    df = df[df["BLZ"].astype(str) == "34"]
-
-    ordered_cols = [
-        "BLZ","Rating_od_wNote","Rating_Kategorie","Forderungsklasse","Risikokundengruppe",
-        "Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)","Risikokostensatz_Fix_(in_%)",
-        "Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
-    ]
-    missing = [c for c in ordered_cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing expected columns in RK_Basis_Primaerbanken.csv: {missing}")
-    df = df[ordered_cols]
-
-    for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
-        df[col] = to_int64(df[col])
-    for col in ["Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)","Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"]:
-        df[col] = to_float_from_maybe_comma(df[col])
-
-    return df
-
-def combine_and_finalize(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
-    df = pd.concat([df1, df2], ignore_index=True)
-
-    for col in ["BLZ","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)"]:
-        if col in df: df[col] = to_int64(df[col])
-
-    df = df[df["BLZ"] != 55000]
-
-    if "Laufzeit_Bis_(in_Tagen)" in df:
-        df["Laufzeit_Bis_(in_Tagen)"] = df["Laufzeit_Bis_(in_Tagen)"].replace(365, 366)
-    if "Laufzeit_Von_(in_Tagen)" in df:
-        df["Laufzeit_Von_(in_Tagen)"] = df["Laufzeit_Von_(in_Tagen)"].replace(366, 367)
-
-    if "Risikokostensatz_Variabel_(in_%)" in df.columns:
-        if "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)" in df.columns:
-            df = df.drop(columns=["Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"])
-        df["Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"] = df["Risikokostensatz_Variabel_(in_%)"]
-
+    # Remove rows where Rating_od_wNote is one of "-1,0", "-1.0", "-2,0", "-2.0"
     if "Rating_od_wNote" in df.columns:
-        df = df[~df["Rating_od_wNote"].astype(str).isin({"-1","-2"})]
+        bad_vals = {"-1,0", "-1.0", "-2,0", "-2.0"}
+        df = df[~df["Rating_od_wNote"].astype(str).isin(bad_vals)]
 
-    # Keep floats internally; we’ll format at export
-    df["Gueltig_Ab"] = ""
+    # Drop helper columns
+    for c in ["Rating_od_wNote_Original", "Rating_od_wNote_Hilfsspalte"]:
+        if c in df.columns:
+            df = df.drop(columns=[c])
 
-    final_order = [
-        "BLZ","Gueltig_Ab","Rating_Kategorie","Rating_od_wNote","Forderungsklasse",
-        "Risikokundengruppe","Laufzeit_Von_(in_Tagen)","Laufzeit_Bis_(in_Tagen)",
-        "Risikokostensatz_Fix_(in_%)","Risikokostensatz_Variabel_(in_%)",
-        "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)"
+    # Reorder
+    final_order_1 = [
+        "BLZ",
+        "Rating_Kategorie",
+        "Rating_od_wNote",
+        "Forderungsklasse",
+        "Risikokundengruppe",
+        "Laufzeit_Von_(in_Tagen)",
+        "Laufzeit_Bis_(in_Tagen)",
+        "Risikokostensatz_Fix_(in_%)",
+        "Risikokostensatz_Variabel_(in_%)",
+        "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)",
     ]
-    df = df[[c for c in final_order if c in df.columns]]
+    df = df.reindex(columns=[c for c in final_order_1 if c in df.columns])
+
+    # Remove Risikokundengruppe
+    if "Risikokundengruppe" in df.columns:
+        df = df.drop(columns=["Risikokundengruppe"])
+
+    # Rename risk cost columns to eigenkapitalkosten
+    df = df.rename(
+        columns={
+            "Risikokostensatz_Fix_(in_%)": "Eigenkapitalkosten_Fix_(in_%)",
+            "Risikokostensatz_Variabel_(in_%)": "Eigenkapitalkosten_Variabel_(in_%)",
+            "Risikokostensatz_nicht_ausgenutzter_Rahmen_(in_%)": "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)",
+        }
+    )
+
+    # Ensure numeric types where sensible (but keep strings where PQ kept strings)
+    for col in ["BLZ", "Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    for col in [
+        "Eigenkapitalkosten_Fix_(in_%)",
+        "Eigenkapitalkosten_Variabel_(in_%)",
+        "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)",
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
     return df
+
+
+def process_ek_basis_primaerbanken(path_prim: Path) -> pd.DataFrame:
+    """Replicates the Power Query steps for EK_Basis_Primaerbanken.csv (has headers)."""
+    df = pd.read_csv(path_prim, dtype=str, encoding="utf-8", engine="python")
+
+    # Table.PromoteHeaders -> already used headers
+    # Table.SelectRows(..., [BLZ] = "34")
+    if "BLZ" not in df.columns:
+        raise ValueError("EK_Basis_Primaerbanken.csv is missing 'BLZ' column.")
+    df = df[df["BLZ"].astype(str) == "34"].copy()
+
+    # Convert types:
+    # {"Laufzeit_Von_(in_Tagen)": int, "Laufzeit_Bis_(in_Tagen)": int,
+    #  "Eigenkapitalkosten_Fix_(in_%)": number, "Eigenkapitalkosten_Variabel_(in_%)": number,
+    #  "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)": number, "BLZ": int}
+    for col in ["Laufzeit_Von_(in_Tagen)", "Laufzeit_Bis_(in_Tagen)", "BLZ"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    for col in [
+        "Eigenkapitalkosten_Fix_(in_%)",
+        "Eigenkapitalkosten_Variabel_(in_%)",
+        "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)",
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Ensure PQ-common columns exist to align with the first dataframe
+    # Some columns like Rating_Kategorie / Rating_od_wNote / Forderungsklasse might be absent in this file.
+    for needed in ["Rating_Kategorie", "Rating_od_wNote", "Forderungsklasse"]:
+        if needed not in df.columns:
+            df[needed] = pd.NA
+
+    # Keep the shared final column set
+    final_cols = [
+        "BLZ",
+        "Rating_Kategorie",
+        "Rating_od_wNote",
+        "Forderungsklasse",
+        "Laufzeit_Von_(in_Tagen)",
+        "Laufzeit_Bis_(in_Tagen)",
+        "Eigenkapitalkosten_Fix_(in_%)",
+        "Eigenkapitalkosten_Variabel_(in_%)",
+        "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)",
+    ]
+    df = df.reindex(columns=[c for c in final_cols if c in df.columns])
+
+    return df
+
+
+def combine_and_postprocess(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
+    """Combine the two processed dataframes and apply the final transformation steps."""
+    combined = pd.concat([df1, df2], ignore_index=True, sort=False)
+
+    # = Table.SelectRows(Quelle, each ([BLZ] <> 55000))
+    if "BLZ" in combined.columns:
+        combined = combined[combined["BLZ"].astype("Int64") != 55000]
+
+    # = Replace 365 -> 366 in Laufzeit_Bis_(in_Tagen)
+    if "Laufzeit_Bis_(in_Tagen)" in combined.columns:
+        combined["Laufzeit_Bis_(in_Tagen)"] = combined["Laufzeit_Bis_(in_Tagen)"].replace(365, 366)
+
+    # = Replace 366 -> 367 in Laufzeit_Von_(in_Tagen)
+    if "Laufzeit_Von_(in_Tagen)" in combined.columns:
+        combined["Laufzeit_Von_(in_Tagen)"] = combined["Laufzeit_Von_(in_Tagen)"].replace(366, 367)
+
+    # = Table.SelectRows(..., each [Rating_Kategorie] <> "9")
+    if "Rating_Kategorie" in combined.columns:
+        combined = combined[combined["Rating_Kategorie"].astype(str) != "9"]
+
+    # = Duplicate Eigenkapitalkosten_Variabel_(in_%) -> copy, drop _nicht_ausgenutzter_, rename copy to _nicht_ausgenutzter_
+    var_col = "Eigenkapitalkosten_Variabel_(in_%)"
+    frame_col = "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)"
+    if var_col in combined.columns:
+        combined[f"{var_col} - Kopie"] = combined[var_col]
+        if frame_col in combined.columns:
+            combined = combined.drop(columns=[frame_col])
+        combined = combined.rename(columns={f"{var_col} - Kopie": frame_col})
+
+    # = Table.SelectRows(NaRahmenSatz, each ([Rating_od_wNote] <> "-1" and [Rating_od_wNote] <> "-2"))
+    if "Rating_od_wNote" in combined.columns:
+        combined = combined[~combined["Rating_od_wNote"].astype(str).isin({"-1", "-2"})]
+
+    # Enforce final column order (keep any extras at the end)
+    final_order = [
+        "BLZ",
+        "Rating_Kategorie",
+        "Rating_od_wNote",
+        "Forderungsklasse",
+        "Laufzeit_Von_(in_Tagen)",
+        "Laufzeit_Bis_(in_Tagen)",
+        "Eigenkapitalkosten_Fix_(in_%)",
+        "Eigenkapitalkosten_Variabel_(in_%)",
+        "Eigenkapitalkosten_nicht_ausgenutzter_Rahmen_(in_%)",
+    ]
+    ordered = [c for c in final_order if c in combined.columns]
+    remaining = [c for c in combined.columns if c not in ordered]
+    combined = combined[ordered + remaining]
+
+    return combined
+
 
 def main():
-    df1 = read_tab_risiko_icaap(FILE1_PATH)
-    df2 = read_rk_basis_primaerbanken(FILE2_PATH)
-    df_final = combine_and_finalize(df1, df2)
+    # Safety: create output dir if missing
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    # Process both inputs
+    df_icaap = process_tab_em_icaap(PATH_TAB_EM_ICAAP)
+    df_prim = process_ek_basis_primaerbanken(PATH_EK_BASIS_PRIM)
 
-    # Save CSV for German/Austrian Excel: semicolon delimiter and comma decimal
-    df_final.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig", sep=";", decimal=",")
+    # Combine + postprocess
+    final_df = combine_and_postprocess(df_icaap, df_prim)
 
-    # Optional: also save XLSX (always displays as proper columns)
-    try:
-        df_final.to_excel(OUTPUT_XLSX, index=False)
-    except Exception:
-        pass
+    # Save CSV (UTF-8 with BOM for Excel friendliness)
+    final_df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
 
-    print(f"Saved CSV:  {OUTPUT_CSV}")
-    print(f"Saved XLSX: {OUTPUT_XLSX}")
+    print(f"Done. Rows: {len(final_df):,} | Saved to: {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
     main()
